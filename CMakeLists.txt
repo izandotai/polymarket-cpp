@@ -7,6 +7,15 @@ if(NOT CMAKE_BUILD_TYPE)
     set(CMAKE_BUILD_TYPE RelWithDebInfo)
 endif()
 
+if(MINGW)
+    # Fully static: an executable may import Windows system libraries
+    # and NOTHING else — no compiler-runtime DLLs ride along. DEP and
+    # ASLR link bits set explicitly; mingw does not guarantee them.
+    add_link_options(-static)
+    add_link_options(-Wl,--nxcompat -Wl,--dynamicbase -Wl,--high-entropy-va)
+    add_compile_definitions(_WIN32_WINNT=0x0A00)
+endif()
+
 include(FetchContent)
 set(FETCHCONTENT_QUIET OFF)
 include(cmake/openssl.cmake)
@@ -15,7 +24,7 @@ include(cmake/openssl.cmake)
 # arrive through izan-crypto, pinned by commit.
 FetchContent_Declare(izan_crypto
     GIT_REPOSITORY https://github.com/izandotai/izan-crypto.git
-    GIT_TAG 83899cb
+    GIT_TAG 6ced820
     EXCLUDE_FROM_ALL
 )
 FetchContent_Declare(doctest
