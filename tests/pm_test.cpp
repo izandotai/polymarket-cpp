@@ -9,7 +9,11 @@
 #include <span>
 #include <string>
 
+#include <cstdlib>
+
+#include "pm/amounts.hpp"
 #include "pm/auth.hpp"
+#include "pm/clob.hpp"
 #include "pm/codec.hpp"
 #include "pm/keys.hpp"
 #include "pm/signing.hpp"
@@ -174,6 +178,29 @@ TEST_CASE("L2 headers are reproducible byte for byte")
     CHECK(h[1].second == pm::b64url_encode(mac));
 }
 
+TEST_CASE("amount arithmetic mirrors the reference builder")
+{
+    using pm::Side;
+    // A real fill from the live venue: 1.42 shares at 0.71 on a 0.01
+    // tick — $1.0082 maker, both amounts in 1e6 units.
+    CHECK(pm::order_amounts(Side::Buy, 1.42, 0.71, "0.01")
+        == std::pair<uint64_t, uint64_t>(1008200, 1420000));
+    // Size rounds down to the tick's share budget first.
+    CHECK(pm::order_amounts(Side::Buy, 1.429, 0.71, "0.01")
+        == std::pair<uint64_t, uint64_t>(1008200, 1420000));
+    // Sells mirror: maker is the shares, taker the dollars.
+    CHECK(pm::order_amounts(Side::Sell, 2.5, 0.4, "0.01")
+        == std::pair<uint64_t, uint64_t>(2500000, 1000000));
+    // Marketable buys: shares down to 2 decimals, dollars UP to 2 —
+    // the cap crosses the book instead of missing it by a cent.
+    CHECK(pm::market_buy_amounts(1.4275, 0.43)
+        == std::pair<uint64_t, uint64_t>(620000, 1420000));
+    CHECK(pm::snap_price(0.4649, "0.01") == doctest::Approx(0.46));
+    CHECK(pm::valid_tick_size("0.001"));
+    CHECK(!pm::valid_tick_size("0.02"));
+    CHECK_THROWS(pm::order_amounts(Side::Buy, 1, 0.5, "0.02"));
+}
+
 TEST_CASE("L1 headers carry the attestation the venue expects")
 {
     const auto key = pm::PrivKey::from_hex(kTestKey);
@@ -183,4 +210,23 @@ TEST_CASE("L1 headers carry the attestation the venue expects")
     // Same signature as the pinned sign_clob_auth vector.
     CHECK(h[1].second.substr(0, 10) == "0x55e3e2f7");
     CHECK(h[3] == std::pair<std::string, std::string>("POLY_NONCE", "0"));
+}
+
+//   PM_LIVE_TESTS=1 build/pm_tests.exe -tc="*live*"
+TEST_CASE("live: the venue answers public market data without credentials")
+{
+    if (!std::getenv("PM_LIVE_TESTS")) {
+        MESSAGE("skipped (set PM_LIVE_TESTS=1 to run against the live venue)");
+        return;
+    }
+    pm::ClobConfig cfg;
+    // A throwaway key: public endpoints never see it, and the client
+    // needs one to exist.
+    cfg.private_key_hex
+        = "ac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80";
+    pm::ClobClient client(cfg);
+    const int64_t t = client.server_time_ms();
+    CHECK(t > 1752900000000); // after mid-2026: the clock is sane
+    const std::string markets = client.gamma_get("/markets?limit=1");
+    CHECK(markets.find("question") != std::string::npos);
 }
