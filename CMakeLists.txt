@@ -14,7 +14,7 @@ set(FETCHCONTENT_QUIET OFF)
 # arrive through izan-crypto, pinned by commit.
 FetchContent_Declare(izan_crypto
     GIT_REPOSITORY https://github.com/izandotai/izan-crypto.git
-    GIT_TAG 9fceb35
+    GIT_TAG 83899cb
     EXCLUDE_FROM_ALL
 )
 FetchContent_Declare(doctest
