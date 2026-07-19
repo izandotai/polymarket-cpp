@@ -9,13 +9,16 @@
 #include <span>
 #include <string>
 
+#include <atomic>
 #include <cstdlib>
+#include <thread>
 
 #include "pm/amounts.hpp"
 #include "pm/auth.hpp"
 #include "pm/clob.hpp"
 #include "pm/codec.hpp"
 #include "pm/keys.hpp"
+#include "pm/rtds.hpp"
 #include "pm/signing.hpp"
 
 namespace {
@@ -229,4 +232,28 @@ TEST_CASE("live: the venue answers public market data without credentials")
     CHECK(t > 1752900000000); // after mid-2026: the clock is sane
     const std::string markets = client.gamma_get("/markets?limit=1");
     CHECK(markets.find("question") != std::string::npos);
+}
+
+TEST_CASE("live: the real-time data socket streams binance prices")
+{
+    if (!std::getenv("PM_LIVE_TESTS")) {
+        MESSAGE("skipped (set PM_LIVE_TESTS=1 to run against the live venue)");
+        return;
+    }
+    boost::asio::io_context ioc;
+    pm::Rtds rtds(ioc);
+    std::atomic<int> got { 0 };
+    rtds.set_on_message([&](std::string_view msg) {
+        if (msg.find("crypto_prices") != std::string_view::npos)
+            ++got;
+    });
+    rtds.subscribe_crypto_prices({ "solusdt" });
+    rtds.start();
+    std::thread io([&] { ioc.run(); });
+    for (int i = 0; i < 80 && got.load() == 0; ++i)
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    rtds.stop();
+    ioc.stop();
+    io.join();
+    CHECK(got.load() > 0);
 }

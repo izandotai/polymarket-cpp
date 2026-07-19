@@ -57,6 +57,7 @@ target_link_libraries(pm_core PUBLIC izan::crypto izan::units sodium)
 
 # pm_net: the synchronous HTTPS transport (Beast, OS trust anchors).
 add_library(pm_net STATIC
+    net/ws_client.cpp
     net/http_client.cpp
     net/tls.cpp
 )
@@ -75,9 +76,20 @@ add_library(pm::clob ALIAS pm_clob)
 target_include_directories(pm_clob PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(pm_clob PUBLIC pm_core pm_net PRIVATE glaze::glaze)
 
+# pm_feeds: the three live sockets — CLOB market books, the
+# authenticated user channel, and the real-time data socket.
+add_library(pm_feeds STATIC
+    pm/market_ws.cpp
+    pm/rtds.cpp
+    pm/user_ws.cpp
+)
+add_library(pm::feeds ALIAS pm_feeds)
+target_include_directories(pm_feeds PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+target_link_libraries(pm_feeds PUBLIC pm_core pm_net PRIVATE glaze::glaze)
+
 if(PROJECT_IS_TOP_LEVEL)
     enable_testing()
     add_executable(pm_tests tests/pm_test.cpp)
-    target_link_libraries(pm_tests PRIVATE pm::clob doctest::doctest)
+    target_link_libraries(pm_tests PRIVATE pm::clob pm::feeds doctest::doctest)
     add_test(NAME pm_tests COMMAND pm_tests)
 endif()
