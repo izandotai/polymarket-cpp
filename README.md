@@ -18,10 +18,18 @@ vector.
   derivation and recovery. Key storage and derivation are your
   application's business, not the SDK's.
 - `pm/codec` — base64url (padded, urlsafe) and HMAC-SHA256.
-
-Transport (REST client, market/user websockets) and market-data
-helpers are on the way; the signing core ships first because it is
-the part everyone gets subtly wrong.
+- `pm/amounts` — the venue's rounding arithmetic under its own tests,
+  including the marketable-buy precision rule the server enforces.
+- `pm/clob` — a synchronous venue client: market data, credential
+  creation and derivation, order placement (EOA and ERC-1271 paths),
+  cancels, balances and the gamma catalogue.
+- `pm/market_ws`, `pm/user_ws`, `pm/rtds` — the three live sockets on
+  a reconnecting, write-queued WSS client (`net/ws_client`), with the
+  venue's undocumented behaviours written down where they bit:
+  dynamic-op-only resubscription on the market feed, reconnect-to-
+  resubscribe on the user feed, the data socket's actual dialect.
+- `net/` — Beast-based HTTPS and WSS transports; TLS trust anchors
+  come from the operating system's root store.
 
 ## Builder codes
 
