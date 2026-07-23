@@ -1,6 +1,8 @@
 #include "pm/market_ws.hpp"
 
 #include <algorithm>
+#include <stdexcept>
+#include <utility>
 
 #include <glaze/glaze.hpp>
 
@@ -17,19 +19,58 @@ namespace {
         bool custom_feature_enabled = true;
     };
 
-    struct DynamicOp {
-        std::string operation; // "subscribe" | "unsubscribe"
+    struct SubscribeOp {
         std::vector<std::string> assets_ids;
+        std::string operation = "subscribe";
+        bool custom_feature_enabled = true;
     };
 
-    std::vector<std::string> diff(
-        const std::vector<std::string>& a, const std::vector<std::string>& b)
+    struct UnsubscribeOp {
+        std::vector<std::string> assets_ids;
+        std::string operation = "unsubscribe";
+    };
+
+    template <typename T>
+    std::string write_message(T&& message)
     {
-        std::vector<std::string> out; // a - b
-        for (const auto& x : a)
-            if (std::find(b.begin(), b.end(), x) == b.end())
-                out.push_back(x);
-        return out;
+        if (auto json = glz::write_json(std::forward<T>(message)))
+            return std::move(*json);
+        throw std::runtime_error(
+            "could not serialize market websocket message");
+    }
+
+}
+
+namespace market_ws_protocol {
+
+    SubscriptionDelta delta(const std::vector<std::string>& desired,
+        const std::vector<std::string>& active)
+    {
+        SubscriptionDelta result;
+        for (const auto& token_id : desired)
+            if (std::find(active.begin(), active.end(), token_id)
+                == active.end())
+                result.add.push_back(token_id);
+        for (const auto& token_id : active)
+            if (std::find(desired.begin(), desired.end(), token_id)
+                == desired.end())
+                result.remove.push_back(token_id);
+        return result;
+    }
+
+    std::string initial_subscription(const std::vector<std::string>& token_ids)
+    {
+        return write_message(InitialSub { token_ids });
+    }
+
+    std::string subscribe(const std::vector<std::string>& token_ids)
+    {
+        return write_message(SubscribeOp { token_ids });
+    }
+
+    std::string unsubscribe(const std::vector<std::string>& token_ids)
+    {
+        return write_message(UnsubscribeOp { token_ids });
     }
 
 }
@@ -47,7 +88,11 @@ MarketWs::MarketWs(boost::asio::io_context& ioc, std::string host)
         if (on_raw_)
             on_raw_(msg);
     });
-    ws_->set_on_open([this] { send_initial(); });
+    ws_->set_on_open([this] {
+        send_initial();
+        if (on_open_)
+            on_open_();
+    });
 }
 
 void MarketWs::set_on_log(net::WsClient::LogHandler h)
@@ -57,32 +102,36 @@ void MarketWs::set_on_log(net::WsClient::LogHandler h)
 
 void MarketWs::send_initial()
 {
-    std::lock_guard lk(mu_);
-    if (desired_.empty())
+    std::vector<std::string> desired;
+    {
+        std::lock_guard lk(mu_);
+        desired = desired_;
+        active_ = desired_;
+    }
+    if (desired.empty())
         return;
-    if (auto r = glz::write_json(InitialSub { desired_, "market", true, true }))
-        ws_->send(*r);
-    active_ = desired_;
+    ws_->send(market_ws_protocol::initial_subscription(desired));
 }
 
 void MarketWs::subscribe(std::vector<std::string> token_ids)
 {
-    std::lock_guard lk(mu_);
-    if (!ws_->connected()) {
-        desired_ = std::move(token_ids); // on_open sends the full set
-        return;
+    market_ws_protocol::SubscriptionDelta change;
+    bool connected = false;
+    {
+        std::lock_guard lk(mu_);
+        connected = ws_->connected();
+        if (connected)
+            change = market_ws_protocol::delta(token_ids, active_);
+        desired_ = std::move(token_ids);
+        if (connected)
+            active_ = desired_;
     }
-    // Connected: incremental adjustments through the dynamic ops.
-    const auto add = diff(token_ids, active_);
-    const auto del = diff(active_, token_ids);
-    if (!add.empty())
-        if (auto r = glz::write_json(DynamicOp { "subscribe", add }))
-            ws_->send(*r);
-    if (!del.empty())
-        if (auto r = glz::write_json(DynamicOp { "unsubscribe", del }))
-            ws_->send(*r);
-    desired_ = std::move(token_ids);
-    active_ = desired_;
+    if (!connected)
+        return; // on_open sends the full desired set
+    if (!change.add.empty())
+        ws_->send(market_ws_protocol::subscribe(change.add));
+    if (!change.remove.empty())
+        ws_->send(market_ws_protocol::unsubscribe(change.remove));
 }
 
 void MarketWs::start()

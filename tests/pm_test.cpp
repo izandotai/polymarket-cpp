@@ -6,6 +6,8 @@
 #define DOCTEST_CONFIG_IMPLEMENT_WITH_MAIN
 #include <doctest/doctest.h>
 
+#include <boost/asio/steady_timer.hpp>
+
 #include <span>
 #include <string>
 
@@ -20,6 +22,7 @@
 #include "pm/deposit_wallet.hpp"
 #include "pm/deposit_wallet_rpc.hpp"
 #include "pm/keys.hpp"
+#include "pm/market_ws.hpp"
 #include "pm/relayer.hpp"
 #include "pm/rtds.hpp"
 #include "pm/signing.hpp"
@@ -59,6 +62,27 @@ pm::OrderV2 golden_order()
     return o;
 }
 
+}
+
+TEST_CASE("market websocket protocol stays byte-for-byte compatible")
+{
+    const std::vector<std::string> initial { "1", "2" };
+    CHECK(pm::market_ws_protocol::initial_subscription(initial)
+        == R"({"assets_ids":["1","2"],"type":"market","initial_dump":true,"custom_feature_enabled":true})");
+    CHECK(pm::market_ws_protocol::subscribe({ "3" })
+        == R"({"assets_ids":["3"],"operation":"subscribe","custom_feature_enabled":true})");
+    CHECK(pm::market_ws_protocol::unsubscribe({ "1" })
+        == R"({"assets_ids":["1"],"operation":"unsubscribe"})");
+}
+
+TEST_CASE("market websocket dynamic subscription preserves reviewed ordering")
+{
+    const auto change
+        = pm::market_ws_protocol::delta({ "2", "3", "4" }, { "1", "2", "5" });
+    CHECK(change.add == std::vector<std::string> { "3", "4" });
+    CHECK(change.remove == std::vector<std::string> { "1", "5" });
+    CHECK(pm::market_ws_protocol::delta({ "1", "2" }, { "1", "2" })
+        == pm::market_ws_protocol::SubscriptionDelta {});
 }
 
 TEST_CASE("a private key knows its own address")
@@ -639,6 +663,53 @@ TEST_CASE("live: the venue answers public market data without credentials")
     CHECK(t > 1752900000000); // after mid-2026: the clock is sane
     const std::string markets = client.gamma_get("/markets?limit=1");
     CHECK(markets.find("question") != std::string::npos);
+}
+
+// PM_LIVE_TESTS=1 PM_LIVE_MARKET_TOKEN=<active token id> build/pm_tests.exe
+//   -tc="live: market websocket reconnects*"
+TEST_CASE("live: market websocket reconnects and restores its subscription")
+{
+    if (!std::getenv("PM_LIVE_TESTS")) {
+        MESSAGE("skipped (set PM_LIVE_TESTS=1 to run against the live venue)");
+        return;
+    }
+    const char* token_id = std::getenv("PM_LIVE_MARKET_TOKEN");
+    if (!token_id) {
+        MESSAGE("skipped (set PM_LIVE_MARKET_TOKEN to an active CLOB token)");
+        return;
+    }
+
+    boost::asio::io_context ioc;
+    pm::MarketWs market(ioc);
+    boost::asio::steady_timer deadline(ioc, std::chrono::seconds(20));
+    std::atomic<int> opens { 0 };
+    std::atomic<int> messages { 0 };
+    std::atomic<bool> kicked { false };
+    std::atomic<bool> recovered { false };
+
+    market.set_on_open([&] { ++opens; });
+    market.set_on_message([&](std::string_view) {
+        ++messages;
+        if (opens.load() == 1 && !kicked.exchange(true)) {
+            market.kick("market websocket live-test reconnect");
+        } else if (opens.load() >= 2) {
+            recovered = true;
+            deadline.cancel();
+            market.stop();
+        }
+    });
+    deadline.async_wait([&](const boost::system::error_code& error) {
+        if (!error)
+            market.stop();
+    });
+    market.subscribe({ token_id });
+    market.start();
+    ioc.run();
+
+    CHECK(kicked.load());
+    CHECK(opens.load() >= 2);
+    CHECK(messages.load() >= 2);
+    CHECK(recovered.load());
 }
 
 // PM_LIVE_TESTS=1 PM_LIVE_WALLET_OWNER=0x... build/pm_tests.exe
