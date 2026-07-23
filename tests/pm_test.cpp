@@ -665,34 +665,58 @@ TEST_CASE("live: the venue answers public market data without credentials")
     CHECK(markets.find("question") != std::string::npos);
 }
 
-// PM_LIVE_TESTS=1 PM_LIVE_MARKET_TOKEN=<active token id> build/pm_tests.exe
-//   -tc="live: market websocket reconnects*"
-TEST_CASE("live: market websocket reconnects and restores its subscription")
+// PM_LIVE_TESTS=1 PM_LIVE_MARKET_TOKEN=<active token id>
+//   PM_LIVE_MARKET_TOKEN_2=<another active token id> build/pm_tests.exe
+//   -tc="live: market websocket applies*"
+TEST_CASE("live: market websocket applies dynamic changes and reconnects")
 {
     if (!std::getenv("PM_LIVE_TESTS")) {
         MESSAGE("skipped (set PM_LIVE_TESTS=1 to run against the live venue)");
         return;
     }
     const char* token_id = std::getenv("PM_LIVE_MARKET_TOKEN");
-    if (!token_id) {
-        MESSAGE("skipped (set PM_LIVE_MARKET_TOKEN to an active CLOB token)");
+    const char* token_id_2 = std::getenv("PM_LIVE_MARKET_TOKEN_2");
+    if (!token_id || !token_id_2) {
+        MESSAGE("skipped (set both PM_LIVE_MARKET_TOKEN variables)");
         return;
     }
 
     boost::asio::io_context ioc;
     pm::MarketWs market(ioc);
     boost::asio::steady_timer deadline(ioc, std::chrono::seconds(20));
+    boost::asio::steady_timer reconnect_delay(ioc);
+    const std::string first_token(token_id);
+    const std::string second_token(token_id_2);
     std::atomic<int> opens { 0 };
     std::atomic<int> messages { 0 };
+    std::atomic<int> stage { 0 };
     std::atomic<bool> kicked { false };
     std::atomic<bool> recovered { false };
 
     market.set_on_open([&] { ++opens; });
-    market.set_on_message([&](std::string_view) {
+    market.set_on_message([&](std::string_view message) {
         ++messages;
-        if (opens.load() == 1 && !kicked.exchange(true)) {
-            market.kick("market websocket live-test reconnect");
-        } else if (opens.load() >= 2) {
+        if (opens.load() == 1 && stage.load() == 0
+            && message.find(first_token) != std::string_view::npos) {
+            int expected = 0;
+            if (stage.compare_exchange_strong(expected, 1))
+                market.subscribe({ first_token, second_token });
+        } else if (opens.load() == 1 && stage.load() == 1
+            && message.find(second_token) != std::string_view::npos) {
+            int expected = 1;
+            if (stage.compare_exchange_strong(expected, 2)) {
+                market.subscribe({ second_token });
+                reconnect_delay.expires_after(std::chrono::milliseconds(250));
+                reconnect_delay.async_wait(
+                    [&](const boost::system::error_code& error) {
+                        if (!error) {
+                            kicked = true;
+                            market.kick("market websocket live-test reconnect");
+                        }
+                    });
+            }
+        } else if (opens.load() >= 2 && stage.load() == 2
+            && message.find(second_token) != std::string_view::npos) {
             recovered = true;
             deadline.cancel();
             market.stop();
@@ -706,9 +730,10 @@ TEST_CASE("live: market websocket reconnects and restores its subscription")
     market.start();
     ioc.run();
 
+    CHECK(stage.load() == 2);
     CHECK(kicked.load());
     CHECK(opens.load() >= 2);
-    CHECK(messages.load() >= 2);
+    CHECK(messages.load() >= 3);
     CHECK(recovered.load());
 }
 
