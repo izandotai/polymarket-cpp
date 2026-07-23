@@ -76,6 +76,8 @@ public:
     std::string cancel_order(const std::string& order_id);
     std::string cancel_all();
     std::string post_heartbeat(const std::string& heartbeat_id = "");
+    // Legacy raw first-page convenience. Uses the same official MA== cursor
+    // and query construction as AccountRestClient.
     std::string get_open_orders();
     std::string get_balance_allowance(
         const std::string& asset_type, const std::string& token_id = "");

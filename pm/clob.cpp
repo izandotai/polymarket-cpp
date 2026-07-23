@@ -8,6 +8,7 @@
 #include <glaze/glaze.hpp>
 #include <sodium.h>
 
+#include "pm/account_rest.hpp"
 #include "pm/amounts.hpp"
 #include "pm/codec.hpp"
 
@@ -220,10 +221,8 @@ ApiCreds ClobClient::derive_api_key(uint64_t nonce)
 std::string ClobClient::get_balance_allowance(
     const std::string& asset_type, const std::string& token_id)
 {
-    std::string q = "/balance-allowance?asset_type=" + asset_type
-        + "&signature_type=" + std::to_string(cfg_.signature_type);
-    if (!token_id.empty())
-        q += "&token_id=" + token_id;
+    const std::string q = account_rest_protocol::balance_allowance_target(
+        cfg_.signature_type, asset_type, token_id);
     return require_200(http_.get(q, l2_now("GET", "/balance-allowance", "")),
         "balance-allowance");
 }
@@ -338,8 +337,10 @@ std::string ClobClient::post_heartbeat(const std::string& heartbeat_id)
 
 std::string ClobClient::get_open_orders()
 {
-    return require_200(
-        http_.get("/data/orders", l2_now("GET", "/data/orders", "")), "orders");
+    return require_200(http_.get(
+                           account_rest_protocol::open_orders_target(),
+                           l2_now("GET", "/data/orders", "")),
+        "orders");
 }
 
 std::string ClobClient::gamma_markets(const std::string& query)

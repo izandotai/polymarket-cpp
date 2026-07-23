@@ -113,7 +113,7 @@ add_library(pm_clob STATIC
 )
 add_library(pm::clob ALIAS pm_clob)
 target_include_directories(pm_clob PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
-target_link_libraries(pm_clob PUBLIC pm_core pm_net PRIVATE glaze::glaze)
+target_link_libraries(pm_clob PUBLIC pm_core pm_net PRIVATE pm_account_rest glaze::glaze)
 
 # pm_feeds: the three live sockets — CLOB market books, the
 # authenticated user channel, and the real-time data socket.
