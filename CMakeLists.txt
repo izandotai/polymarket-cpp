@@ -85,6 +85,13 @@ add_library(pm::public_rest ALIAS pm_public_rest)
 target_include_directories(pm_public_rest PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(pm_public_rest PUBLIC pm_net)
 
+add_library(pm_geoblock STATIC
+    pm/geoblock.cpp
+)
+add_library(pm::geoblock ALIAS pm_geoblock)
+target_include_directories(pm_geoblock PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+target_link_libraries(pm_geoblock PUBLIC pm_net)
+
 add_library(pm_account_rest STATIC
     pm/account_rest.cpp
 )
@@ -126,6 +133,7 @@ if(PROJECT_IS_TOP_LEVEL)
         pm::clob
         pm::account_rest
         pm::feeds
+        pm::geoblock
         pm::public_rest
         pm::wallet
         doctest::doctest

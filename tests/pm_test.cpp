@@ -22,6 +22,7 @@
 #include "pm/codec.hpp"
 #include "pm/deposit_wallet.hpp"
 #include "pm/deposit_wallet_rpc.hpp"
+#include "pm/geoblock.hpp"
 #include "pm/keys.hpp"
 #include "pm/market_ws.hpp"
 #include "pm/public_rest.hpp"
@@ -115,6 +116,43 @@ TEST_CASE("public REST client pins credential-free routes and response bytes")
     CHECK_THROWS_AS(client.get_book("not-a-token"), std::invalid_argument);
     CHECK_THROWS_AS(
         client.get_event_by_slug("../event"), std::invalid_argument);
+}
+
+TEST_CASE("geoblock client preserves the official one-shot contract")
+{
+    int calls = 0;
+    pm::GeoblockClient client([&](const std::string& target) {
+        ++calls;
+        CHECK(target == "/api/geoblock");
+        return pm::net::HttpResponse {
+            451, R"({"blocked":true,"country":"US","region":"NY"})"
+        };
+    });
+    const auto response = client.check();
+    CHECK(calls == 1);
+    CHECK(response.status == 451);
+    CHECK(response.body
+        == R"({"blocked":true,"country":"US","region":"NY"})");
+
+    int failed_calls = 0;
+    pm::GeoblockClient failing(
+        [&](const std::string&) -> pm::net::HttpResponse {
+            ++failed_calls;
+            throw std::runtime_error("GET_READ_FAILED");
+        });
+    CHECK_THROWS_WITH(failing.check(), "GET_READ_FAILED");
+    CHECK(failed_calls == 1);
+
+    CHECK(pm::kGeoblockHeaderLimit == 64 * 1024);
+    CHECK(pm::kGeoblockBodyLimit == 4 * 1024 * 1024);
+    CHECK(pm::kGeoblockConnectTimeoutSeconds == 10);
+    CHECK(pm::kGeoblockReadTimeoutSeconds == 15);
+    CHECK_THROWS_AS(
+        pm::GeoblockClient(pm::GeoblockConfig { .host = "" }),
+        std::invalid_argument);
+    CHECK_THROWS_AS(
+        pm::GeoblockClient(pm::GeoblockClient::GetHandler {}),
+        std::invalid_argument);
 }
 
 TEST_CASE("account REST targets match py-clob-client-v2 request encoding")
@@ -804,6 +842,19 @@ TEST_CASE("live: the venue answers public market data without credentials")
     CHECK(t > 1752900000000); // after mid-2026: the clock is sane
     const std::string markets = client.gamma_get("/markets?limit=1");
     CHECK(markets.find("question") != std::string::npos);
+}
+
+TEST_CASE("live: geoblock one-shot transport accepts the production response")
+{
+    if (!std::getenv("PM_LIVE_TESTS")) {
+        MESSAGE("skipped (set PM_LIVE_TESTS=1 to run against the live venue)");
+        return;
+    }
+    pm::GeoblockClient client;
+    const auto response = client.check();
+    CHECK(response.status == 200);
+    CHECK(response.body.find("\"blocked\"") != std::string::npos);
+    CHECK(response.body.find("\"country\"") != std::string::npos);
 }
 
 // PM_LIVE_TESTS=1 PM_LIVE_EVENT_SLUG=<active event slug>
