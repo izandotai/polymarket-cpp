@@ -85,6 +85,13 @@ add_library(pm::public_rest ALIAS pm_public_rest)
 target_include_directories(pm_public_rest PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(pm_public_rest PUBLIC pm_net)
 
+add_library(pm_account_rest STATIC
+    pm/account_rest.cpp
+)
+add_library(pm::account_rest ALIAS pm_account_rest)
+target_include_directories(pm_account_rest PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+target_link_libraries(pm_account_rest PUBLIC pm_core pm_net)
+
 add_library(pm_wallet STATIC
     pm/deposit_wallet_rpc.cpp
     pm/relayer.cpp
@@ -117,6 +124,7 @@ if(PROJECT_IS_TOP_LEVEL)
     add_executable(pm_tests tests/pm_test.cpp)
     target_link_libraries(pm_tests PRIVATE
         pm::clob
+        pm::account_rest
         pm::feeds
         pm::public_rest
         pm::wallet

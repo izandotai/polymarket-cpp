@@ -16,6 +16,7 @@
 #include <thread>
 
 #include "pm/amounts.hpp"
+#include "pm/account_rest.hpp"
 #include "pm/auth.hpp"
 #include "pm/clob.hpp"
 #include "pm/codec.hpp"
@@ -114,6 +115,115 @@ TEST_CASE("public REST client pins credential-free routes and response bytes")
     CHECK_THROWS_AS(client.get_book("not-a-token"), std::invalid_argument);
     CHECK_THROWS_AS(
         client.get_event_by_slug("../event"), std::invalid_argument);
+}
+
+TEST_CASE("account REST targets match py-clob-client-v2 request encoding")
+{
+    const std::string market
+        = "0x0000000000000000000000000000000000000000000000000000000000000001";
+    const std::string order_id
+        = "0xabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcd";
+    const std::string maker
+        = "0x1234567890123456789012345678901234567890";
+
+    CHECK(pm::account_rest_protocol::open_orders_target(
+              { .market = market, .asset_id = "100", .id = order_id })
+        == "/data/orders?market=" + market
+            + "&asset_id=100&id=" + order_id + "&next_cursor=MA%3D%3D");
+    CHECK(pm::account_rest_protocol::trades_target(
+              { .market = market,
+                  .asset_id = "100",
+                  .after = "1450000",
+                  .before = "1460000",
+                  .maker_address = maker,
+                  .id = "aa-bb" },
+              "AA==")
+        == "/data/trades?market=" + market
+            + "&asset_id=100&after=1450000&before=1460000&maker_address="
+            + maker + "&id=aa-bb&next_cursor=AA%3D%3D");
+    CHECK(pm::account_rest_protocol::balance_allowance_target(
+              3, "CONDITIONAL", "222")
+        == "/balance-allowance?signature_type=3&asset_type=CONDITIONAL&token_id=222");
+    CHECK(pm::account_rest_protocol::positions_target(maker, 500, 1000)
+        == "/positions?user=" + maker
+            + "&sizeThreshold=0&limit=500&offset=1000");
+
+    CHECK_THROWS_AS(pm::account_rest_protocol::open_orders_target({}, ""),
+        std::invalid_argument);
+    CHECK_THROWS_AS(
+        pm::account_rest_protocol::trades_target(
+            { .maker_address = "not-an-address" }),
+        std::invalid_argument);
+    CHECK_THROWS_AS(
+        pm::account_rest_protocol::balance_allowance_target(
+            3, "CONDITIONAL"),
+        std::invalid_argument);
+    CHECK_THROWS_AS(
+        pm::account_rest_protocol::positions_target(maker, 501, 0),
+        std::invalid_argument);
+}
+
+TEST_CASE("account REST signs endpoint paths and preserves response bytes")
+{
+    const pm::ApiCreds creds {
+        .api_key = "test-api-key",
+        .secret = "c2VjcmV0",
+        .passphrase = "test-passphrase",
+    };
+    const auto signer = pm::eth_address_from_hex(kTestAddr);
+    const std::string maker
+        = "0x1234567890123456789012345678901234567890";
+    std::vector<std::string> targets;
+    std::vector<pm::Headers> headers;
+
+    pm::AccountRestClient client(
+        { .creds = creds,
+            .signer_address = signer,
+            .signature_type = 3,
+            .unix_seconds = [] { return std::uint64_t { 1752900000 }; } },
+        [&](const std::string& target, const pm::Headers& request_headers) {
+            targets.push_back(target);
+            headers.push_back(request_headers);
+            return pm::net::HttpResponse {
+                401, R"({"error":"readonly rejected"})"
+            };
+        },
+        [&](const std::string& target) {
+            targets.push_back(target);
+            return pm::net::HttpResponse { 503, "data unavailable" };
+        });
+
+    const auto orders = client.get_open_orders_page();
+    CHECK(orders.status == 401);
+    CHECK(orders.body == R"({"error":"readonly rejected"})");
+    const auto trades = client.get_trades_page(
+        { .maker_address = maker }, "MTAw");
+    CHECK(trades.status == 401);
+    const auto balance = client.get_balance_allowance("COLLATERAL");
+    CHECK(balance.status == 401);
+    const auto positions = client.get_positions_page(maker, 500, 0);
+    CHECK(positions.status == 503);
+    CHECK(positions.body == "data unavailable");
+
+    CHECK(targets
+        == std::vector<std::string> {
+            "/data/orders?next_cursor=MA%3D%3D",
+            "/data/trades?maker_address=" + maker
+                + "&next_cursor=MTAw",
+            "/balance-allowance?signature_type=3&asset_type=COLLATERAL",
+            "/positions?user=" + maker
+                + "&sizeThreshold=0&limit=500&offset=0",
+        });
+    REQUIRE(headers.size() == 3);
+    CHECK(headers[0]
+        == pm::l2_headers(creds, signer, 1752900000, "GET",
+            "/data/orders", ""));
+    CHECK(headers[1]
+        == pm::l2_headers(creds, signer, 1752900000, "GET",
+            "/data/trades", ""));
+    CHECK(headers[2]
+        == pm::l2_headers(creds, signer, 1752900000, "GET",
+            "/balance-allowance", ""));
 }
 
 TEST_CASE("a private key knows its own address")
