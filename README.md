@@ -20,6 +20,13 @@ vector.
 - `pm/codec` — base64url (padded, urlsafe) and HMAC-SHA256.
 - `pm/amounts` — the venue's rounding arithmetic under its own tests,
   including the marketable-buy precision rule the server enforces.
+- `pm/deposit_wallet` and `pm/deposit_wallet_rpc` — deterministic legacy
+  UUPS/current Beacon CREATE2 derivation plus the official resolution rule:
+  preserve an already-deployed UUPS wallet, otherwise use the factory's
+  current `BEACON()` candidate. Deployment is checked with `eth_getCode`.
+- `pm/relayer` — deterministic `WALLET-CREATE` and signed `WALLET` Batch
+  request construction, builder HMAC authentication, and explicit relayer
+  read/write methods. Construction never deploys or executes a Batch.
 - `pm/clob` — a synchronous venue client: market data, credential
   creation and derivation, order placement (EOA and ERC-1271 paths),
   cancels, balances and the gamma catalogue.
@@ -50,6 +57,9 @@ Nothing is asserted on faith:
 - Order digests and signatures against golden vectors cross-checked
   with a py-clob-client-parity implementation that has placed real
   orders on the live venue.
+- Deposit-wallet addresses, resolution branches, Batch signatures, request
+  JSON, and builder HMAC headers against Polymarket's official
+  `py-builder-relayer-client`.
 
 ```
 cmake -S . -B build -G Ninja

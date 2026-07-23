@@ -17,7 +17,10 @@
 #include "pm/auth.hpp"
 #include "pm/clob.hpp"
 #include "pm/codec.hpp"
+#include "pm/deposit_wallet.hpp"
+#include "pm/deposit_wallet_rpc.hpp"
 #include "pm/keys.hpp"
+#include "pm/relayer.hpp"
 #include "pm/rtds.hpp"
 #include "pm/signing.hpp"
 
@@ -153,6 +156,386 @@ TEST_CASE("the 1271 wrapper carries its reconstruction material verbatim")
     CHECK(sig[sig.size() - 1] == uint8_t(type_str.size() & 0xff));
 }
 
+TEST_CASE("deposit wallet CREATE2 derivation matches the official Python SDK")
+{
+    const auto beacon = pm::eth_address_from_hex(
+        "0x7A18EDfe055488A3128f01F563e5B479D92ffc3a");
+
+    // py-builder-relayer-client tests/builder/test_derive.py.
+    const auto polygon_owner = pm::eth_address_from_hex(
+        "0xA60601A4d903af91855C52BFB3814f6bA342f201");
+    CHECK(pm::to_hex0x(pm::derive_deposit_wallet_uups(polygon_owner))
+        == "0x8b60bf0f650bf7a0d93f10d72375b37de18f8c40");
+
+    const auto beacon_owner = pm::eth_address_from_hex(
+        "0x0000000000000000000000000000000000000001");
+    CHECK(pm::to_hex0x(
+              pm::derive_deposit_wallet_beacon(beacon_owner, beacon))
+        == "0x94bf330955a0b957662feaf878de77bf25f76cd9");
+
+    // py-builder-relayer-client tests/test_client_deposit_wallet.py.
+    const auto hardhat_owner = pm::eth_address_from_hex(kTestAddr);
+    const auto candidates
+        = pm::derive_deposit_wallet_candidates(hardhat_owner, beacon);
+    CHECK(pm::to_hex0x(candidates.uups)
+        == "0xdf8b9e8f9ab23f261f6e1b171b7454ae6e46ba76");
+    CHECK(pm::to_hex0x(candidates.beacon)
+        == "0xbc0ff067b7740eff76c1ca93c875ba6b890d6b50");
+}
+
+TEST_CASE("deposit wallet resolution preserves a deployed legacy UUPS wallet")
+{
+    const auto owner = pm::eth_address_from_hex(kTestAddr);
+    const auto expected_uups = pm::eth_address_from_hex(
+        "0xdf8b9E8f9AB23f261F6e1B171B7454ae6E46Ba76");
+    const auto expected_beacon = pm::eth_address_from_hex(
+        "0xBc0fF067b7740Eff76C1ca93c875Ba6B890d6B50");
+    int calls = 0;
+    const auto resolution = pm::resolve_deposit_wallet(owner,
+        [&](std::string_view method, const std::string& params) {
+            ++calls;
+            if (method == "eth_call") {
+                return std::string(
+                    "0x000000000000000000000000"
+                    "7A18EDfe055488A3128f01F563e5B479D92ffc3a");
+            }
+            if (params.find(pm::to_hex0x(expected_uups))
+                != std::string::npos) {
+                return std::string("0x01");
+            }
+            if (params.find(pm::to_hex0x(expected_beacon))
+                != std::string::npos) {
+                return std::string("0x");
+            }
+            throw std::runtime_error("unexpected RPC request");
+        });
+
+    CHECK(calls == 3);
+    CHECK(resolution.candidates.uups == expected_uups);
+    CHECK(resolution.candidates.beacon == expected_beacon);
+    CHECK(resolution.uups_deployed);
+    CHECK(!resolution.beacon_deployed);
+    CHECK(resolution.selected_kind == pm::DepositWalletKind::Uups);
+    CHECK(resolution.selected == expected_uups);
+    CHECK(resolution.selected_deployed());
+}
+
+TEST_CASE("deposit wallet resolution selects Beacon for a new owner")
+{
+    const auto owner = pm::eth_address_from_hex(kTestAddr);
+    const auto expected_uups = pm::eth_address_from_hex(
+        "0xdf8b9E8f9AB23f261F6e1B171B7454ae6E46Ba76");
+    const auto expected_beacon = pm::eth_address_from_hex(
+        "0xBc0fF067b7740Eff76C1ca93c875Ba6B890d6B50");
+    const auto resolution = pm::resolve_deposit_wallet(owner,
+        [&](std::string_view method, const std::string& params) {
+            if (method == "eth_call") {
+                return std::string(
+                    "0x000000000000000000000000"
+                    "7A18EDfe055488A3128f01F563e5B479D92ffc3a");
+            }
+            if (params.find(pm::to_hex0x(expected_uups))
+                != std::string::npos) {
+                return std::string("0x0");
+            }
+            if (params.find(pm::to_hex0x(expected_beacon))
+                != std::string::npos) {
+                return std::string("0x6001");
+            }
+            throw std::runtime_error("unexpected RPC request");
+        });
+
+    CHECK(!resolution.uups_deployed);
+    CHECK(resolution.beacon_deployed);
+    CHECK(resolution.selected_kind == pm::DepositWalletKind::Beacon);
+    CHECK(resolution.selected == expected_beacon);
+    CHECK(resolution.selected_deployed());
+}
+
+TEST_CASE("deposit wallet resolution supports a pre-Beacon factory")
+{
+    const auto owner = pm::eth_address_from_hex(kTestAddr);
+    int calls = 0;
+    const auto resolution = pm::resolve_deposit_wallet(owner,
+        [&](std::string_view method, const std::string&) {
+            ++calls;
+            if (method == "eth_call")
+                return std::string("0x");
+            return std::string("0x");
+        });
+
+    CHECK(calls == 2);
+    CHECK(resolution.factory_beacon == pm::EthAddress {});
+    CHECK(resolution.candidates.beacon == pm::EthAddress {});
+    CHECK(resolution.selected_kind == pm::DepositWalletKind::Uups);
+    CHECK(!resolution.selected_deployed());
+}
+
+TEST_CASE("deposit wallet resolution rejects malformed RPC bytecode")
+{
+    const auto owner = pm::eth_address_from_hex(kTestAddr);
+    CHECK_THROWS(pm::resolve_deposit_wallet(owner,
+        [](std::string_view method, const std::string&) {
+            if (method == "eth_call") {
+                return std::string(
+                    "0x000000000000000000000000"
+                    "7A18EDfe055488A3128f01F563e5B479D92ffc3a");
+            }
+            return std::string("0xzz");
+        }));
+}
+
+TEST_CASE("deposit wallet Batch signing matches the official Python SDK")
+{
+    const auto key = pm::PrivKey::from_hex(kTestKey);
+    const auto wallet = pm::eth_address_from_hex(
+        "0xBc0fF067b7740Eff76C1ca93c875Ba6B890d6B50");
+    const std::vector<pm::DepositWalletCall> calls {
+        {
+            .target = pm::eth_address_from_hex(
+                "0x0000000000000000000000000000000000000001"),
+            .value = pm::U256::from_u64(0),
+            .data = pm::from_hex(
+                "0x095ea7b3"
+                "0000000000000000000000000000000000000000000000000000000000000002"
+                "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"),
+        },
+    };
+
+    const auto digest = pm::deposit_wallet_batch_digest(
+        137, wallet, 0, 1234567890, calls);
+    CHECK(hex_of(digest.data(), digest.size())
+        == "78766dd507106379818ad3fea96d1099cbf6f42c7a763d6a0eb2d4832ecf9735");
+
+    const auto signature = pm::sign_deposit_wallet_batch(
+        key, 137, wallet, 0, 1234567890, calls);
+    CHECK(hex_of(signature.data(), signature.size())
+        == "67fe391bcfef7723e17f7e2b4627a5c3b2cec4ac53a73fd568197d5d5d55cd28"
+           "0126e07488501b898bcc47519edc50d8b30c00ce4117935a4df1089d14fb87cf"
+           "1b");
+    CHECK(pm::recover_eth_address(signature, digest) == key.address());
+}
+
+TEST_CASE("deposit wallet relayer request bytes match the official Python SDK")
+{
+    const auto key = pm::PrivKey::from_hex(kTestKey);
+    const auto owner = key.address();
+    const auto wallet = pm::eth_address_from_hex(
+        "0xBc0fF067b7740Eff76C1ca93c875Ba6B890d6B50");
+    const std::string official_calldata
+        = "0x095ea7b3"
+          "0000000000000000000000000000000000000000000000000000000000000002"
+          "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff";
+    const std::vector<pm::DepositWalletCall> calls {
+        {
+            .target = pm::eth_address_from_hex(
+                "0x0000000000000000000000000000000000000001"),
+            .value = pm::U256::from_u64(0),
+            .data = pm::from_hex(official_calldata),
+        },
+    };
+
+    const std::string create_body
+        = pm::build_deposit_wallet_create_request(owner);
+    CHECK(create_body
+        == "{\"type\":\"WALLET-CREATE\","
+           "\"from\":\"0xf39fd6e51aad88f6f4ce6ab8827279cfffb92266\","
+           "\"to\":\"0x00000000000fb5c9adea0298d729a0cb3823cc07\"}");
+
+    const pm::BuilderApiCreds builder {
+        .key = "test-key",
+        .secret = "SmVmZQ==",
+        .passphrase = "test-pass",
+    };
+    const auto headers = pm::build_builder_headers(
+        builder, 1752900000, "POST", "/submit", create_body);
+    REQUIRE(headers.size() == 4);
+    CHECK(headers[0]
+        == std::pair<std::string, std::string>(
+            "POLY_BUILDER_API_KEY", "test-key"));
+    CHECK(headers[1]
+        == std::pair<std::string, std::string>(
+            "POLY_BUILDER_TIMESTAMP", "1752900000"));
+    CHECK(headers[2]
+        == std::pair<std::string, std::string>(
+            "POLY_BUILDER_PASSPHRASE", "test-pass"));
+    CHECK(headers[3]
+        == std::pair<std::string, std::string>(
+            "POLY_BUILDER_SIGNATURE",
+            "k_IOPNkVvN9B7qSlVc_scBxwkAmRoS75jwHJGoBZPEM="));
+
+    const auto signature = pm::sign_deposit_wallet_batch(
+        key, 137, wallet, 0, 1234567890, calls);
+    const auto batch_body = pm::build_deposit_wallet_batch_request(
+        owner, wallet, 0, 1234567890, calls, signature);
+    const std::string expected_batch_body
+        = "{\"type\":\"WALLET\","
+          "\"from\":\"0xf39fd6e51aad88f6f4ce6ab8827279cfffb92266\","
+          "\"to\":\"0x00000000000fb5c9adea0298d729a0cb3823cc07\","
+          "\"nonce\":\"0\","
+          "\"signature\":\"0x67fe391bcfef7723e17f7e2b4627a5c3b2cec4ac53a"
+          "73fd568197d5d5d55cd280126e07488501b898bcc47519edc50d8b30c00ce4117"
+          "935a4df1089d14fb87cf1b\","
+          "\"depositWalletParams\":{"
+          "\"depositWallet\":\"0xbc0ff067b7740eff76c1ca93c875ba6b890d6b50\","
+          "\"deadline\":\"1234567890\","
+          "\"calls\":[{"
+          "\"target\":\"0x0000000000000000000000000000000000000001\","
+          "\"value\":\"0\","
+          "\"data\":\""
+        + official_calldata + "\"}]}}";
+    CHECK(batch_body == expected_batch_body);
+}
+
+TEST_CASE("relayer deployment is testable without an external write")
+{
+    const auto owner = pm::PrivKey::from_hex(kTestKey).address();
+    const std::string expected_body
+        = pm::build_deposit_wallet_create_request(owner);
+    int requests = 0;
+    pm::RelayerConfig config;
+    config.builder_creds = {
+        .key = "test-key",
+        .secret = "SmVmZQ==",
+        .passphrase = "test-pass",
+    };
+    pm::RelayerClient client(config,
+        [&](std::string_view method, const std::string& target,
+            const std::string& body, const pm::net::Headers& headers) {
+            ++requests;
+            CHECK(method == "POST");
+            CHECK(target == "/submit");
+            CHECK(body == expected_body);
+            REQUIRE(headers.size() == 4);
+            CHECK(headers[3].second
+                == "k_IOPNkVvN9B7qSlVc_scBxwkAmRoS75jwHJGoBZPEM=");
+            return pm::net::HttpResponse {
+                .status = 200,
+                .body = R"({"transactionID":"test-txn","transactionHash":"0xabc"})",
+            };
+        });
+
+    const auto transaction
+        = client.deploy_deposit_wallet(owner, 1752900000);
+    CHECK(requests == 1);
+    CHECK(transaction.transaction_id == "test-txn");
+    CHECK(transaction.transaction_hash == "0xabc");
+}
+
+TEST_CASE("relayer wallet Batch execution is testable without an external write")
+{
+    const auto key = pm::PrivKey::from_hex(kTestKey);
+    const auto wallet = pm::eth_address_from_hex(
+        "0xBc0fF067b7740Eff76C1ca93c875Ba6B890d6B50");
+    const std::vector<pm::DepositWalletCall> calls {
+        {
+            .target = pm::eth_address_from_hex(
+                "0x0000000000000000000000000000000000000001"),
+            .value = pm::U256::from_u64(0),
+            .data = pm::from_hex("0x1234"),
+        },
+    };
+    const auto signature = pm::sign_deposit_wallet_batch(
+        key, 137, wallet, 9, 1234567890, calls);
+    const auto expected_body = pm::build_deposit_wallet_batch_request(
+        key.address(), wallet, 9, 1234567890, calls, signature);
+
+    pm::RelayerConfig config;
+    config.builder_creds = {
+        .key = "test-key",
+        .secret = "SmVmZQ==",
+        .passphrase = "test-pass",
+    };
+    int requests = 0;
+    pm::RelayerClient client(config,
+        [&](std::string_view method, const std::string& target,
+            const std::string& body, const pm::net::Headers& headers) {
+            ++requests;
+            CHECK(method == "POST");
+            CHECK(target == "/submit");
+            CHECK(body == expected_body);
+            CHECK(headers.size() == 4);
+            return pm::net::HttpResponse {
+                .status = 200,
+                .body = R"({"transactionID":"batch-txn","transactionHash":""})",
+            };
+        });
+
+    const auto transaction = client.execute_deposit_wallet_batch(
+        key, wallet, 9, 1234567890, calls, 1752900000);
+    CHECK(requests == 1);
+    CHECK(transaction.transaction_id == "batch-txn");
+}
+
+TEST_CASE("relayer writes fail closed without complete credentials")
+{
+    const auto owner = pm::PrivKey::from_hex(kTestKey).address();
+    pm::RelayerClient no_credentials({},
+        [](std::string_view, const std::string&, const std::string&,
+            const pm::net::Headers&) {
+            FAIL("transport must not run without submit credentials");
+            return pm::net::HttpResponse {};
+        });
+    CHECK_THROWS(no_credentials.deploy_deposit_wallet(owner, 1752900000));
+
+    pm::RelayerConfig relayer_key_config;
+    relayer_key_config.relayer_creds = {
+        .key = "relayer-key",
+        .address = pm::to_hex0x(owner),
+    };
+    pm::RelayerClient relayer_key_client(relayer_key_config,
+        [](std::string_view, const std::string&, const std::string&,
+            const pm::net::Headers& headers) {
+            REQUIRE(headers.size() == 2);
+            CHECK(headers[0]
+                == std::pair<std::string, std::string>(
+                    "RELAYER_API_KEY", "relayer-key"));
+            CHECK(headers[1].first == "RELAYER_API_KEY_ADDRESS");
+            return pm::net::HttpResponse {
+                .status = 200,
+                .body = R"({"transactionID":"relayer-key-txn"})",
+            };
+        });
+    CHECK(relayer_key_client
+              .deploy_deposit_wallet(owner, 1752900000)
+              .transaction_id
+        == "relayer-key-txn");
+}
+
+TEST_CASE("relayer read paths always scope deposit wallets as WALLET")
+{
+    const auto owner = pm::PrivKey::from_hex(kTestKey).address();
+    int requests = 0;
+    pm::RelayerClient client({},
+        [&](std::string_view method, const std::string& target,
+            const std::string& body, const pm::net::Headers& headers) {
+            ++requests;
+            CHECK(method == "GET");
+            CHECK(body.empty());
+            CHECK(headers.empty());
+            if (target.starts_with("/nonce?")) {
+                CHECK(target
+                    == "/nonce?address="
+                        "0xf39fd6e51aad88f6f4ce6ab8827279cfffb92266"
+                        "&type=WALLET");
+                return pm::net::HttpResponse {
+                    .status = 200, .body = R"({"nonce":"7"})"
+                };
+            }
+            CHECK(target
+                == "/deployed?address="
+                    "0xf39fd6e51aad88f6f4ce6ab8827279cfffb92266"
+                    "&type=WALLET");
+            return pm::net::HttpResponse {
+                .status = 200, .body = R"({"deployed":true})"
+            };
+        });
+
+    CHECK(client.get_nonce(owner) == 7);
+    CHECK(client.get_deployed(owner));
+    CHECK(requests == 2);
+}
+
 TEST_CASE("L2 headers are reproducible byte for byte")
 {
     pm::ApiCreds creds;
@@ -232,6 +615,45 @@ TEST_CASE("live: the venue answers public market data without credentials")
     CHECK(t > 1752900000000); // after mid-2026: the clock is sane
     const std::string markets = client.gamma_get("/markets?limit=1");
     CHECK(markets.find("question") != std::string::npos);
+}
+
+// PM_LIVE_TESTS=1 PM_LIVE_WALLET_OWNER=0x... build/pm_tests.exe
+//   -tc="live: deposit wallet resolver*"
+TEST_CASE("live: deposit wallet resolver reads the current Polygon factory")
+{
+    if (!std::getenv("PM_LIVE_TESTS")) {
+        MESSAGE("skipped (set PM_LIVE_TESTS=1 to run against Polygon)");
+        return;
+    }
+    const char* owner_text = std::getenv("PM_LIVE_WALLET_OWNER");
+    if (!owner_text) {
+        MESSAGE("skipped (set PM_LIVE_WALLET_OWNER to a public EOA address)");
+        return;
+    }
+    const char* rpc_text = std::getenv("PM_LIVE_RPC_URL");
+    const auto resolution = pm::resolve_deposit_wallet(
+        pm::eth_address_from_hex(owner_text),
+        rpc_text ? rpc_text : pm::kPolygonDefaultRpcUrl);
+
+    MESSAGE("factory beacon: " << pm::to_hex0x(resolution.factory_beacon));
+    MESSAGE("UUPS: " << pm::to_hex0x(resolution.candidates.uups)
+                     << " deployed=" << resolution.uups_deployed);
+    MESSAGE("Beacon: " << pm::to_hex0x(resolution.candidates.beacon)
+                       << " deployed=" << resolution.beacon_deployed);
+    MESSAGE("selected: " << pm::to_hex0x(resolution.selected)
+                         << " kind="
+                         << pm::deposit_wallet_kind_name(
+                                resolution.selected_kind));
+
+    CHECK(resolution.factory_beacon != pm::EthAddress {});
+    CHECK(resolution.selected
+        == (resolution.selected_kind == pm::DepositWalletKind::Uups
+                ? resolution.candidates.uups
+                : resolution.candidates.beacon));
+    if (const char* expected = std::getenv("PM_LIVE_EXPECTED_WALLET")) {
+        CHECK(resolution.selected == pm::eth_address_from_hex(expected));
+        CHECK(resolution.selected_deployed());
+    }
 }
 
 TEST_CASE("live: the real-time data socket streams binance prices")

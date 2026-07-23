@@ -57,6 +57,7 @@ add_library(pm_core STATIC
     pm/amounts.cpp
     pm/auth.cpp
     pm/codec.cpp
+    pm/deposit_wallet.cpp
     pm/keys.cpp
     pm/signing.cpp
 )
@@ -76,6 +77,14 @@ target_link_libraries(pm_net PUBLIC Boost::beast Boost::asio pm_openssl)
 if(WIN32)
     target_link_libraries(pm_net PUBLIC ws2_32 mswsock crypt32)
 endif()
+
+add_library(pm_wallet STATIC
+    pm/deposit_wallet_rpc.cpp
+    pm/relayer.cpp
+)
+add_library(pm::wallet ALIAS pm_wallet)
+target_include_directories(pm_wallet PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+target_link_libraries(pm_wallet PUBLIC pm_core pm_net PRIVATE glaze::glaze)
 
 # pm_clob: the venue client — market data, credentials and orders.
 add_library(pm_clob STATIC
@@ -99,6 +108,11 @@ target_link_libraries(pm_feeds PUBLIC pm_core pm_net PRIVATE glaze::glaze)
 if(PROJECT_IS_TOP_LEVEL)
     enable_testing()
     add_executable(pm_tests tests/pm_test.cpp)
-    target_link_libraries(pm_tests PRIVATE pm::clob pm::feeds doctest::doctest)
+    target_link_libraries(pm_tests PRIVATE
+        pm::clob
+        pm::feeds
+        pm::wallet
+        doctest::doctest
+    )
     add_test(NAME pm_tests COMMAND pm_tests)
 endif()
