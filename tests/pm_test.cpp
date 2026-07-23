@@ -150,6 +150,9 @@ TEST_CASE("public REST client pins credential-free routes and response bytes")
             return pm::net::HttpResponse { 503, "temporarily unavailable" };
         });
 
+    const auto time = client.get_server_time();
+    CHECK(time.status == 404);
+    CHECK(time.body == R"({"error":"book"})");
     const auto book = client.get_book("123");
     CHECK(book.status == 404);
     CHECK(book.body == R"({"error":"book"})");
@@ -158,6 +161,7 @@ TEST_CASE("public REST client pins credential-free routes and response bytes")
     CHECK(event.body == "temporarily unavailable");
     CHECK(requests
         == std::vector<std::string> {
+            "clob:/time",
             "clob:/book?token_id=123",
             "gamma:/events/slug/btc-updown-5m-1784712300",
         });
@@ -923,6 +927,12 @@ TEST_CASE("live: credential-free public REST returns event and book")
     }
 
     pm::PublicRestClient client;
+    const auto time = client.get_server_time();
+    REQUIRE(time.status == 200);
+    CHECK(std::ranges::all_of(time.body, [](unsigned char character) {
+        return character >= '0' && character <= '9';
+    }));
+
     const auto event = client.get_event_by_slug(slug);
     REQUIRE(event.status == 200);
     CHECK(event.body.find(slug) != std::string::npos);

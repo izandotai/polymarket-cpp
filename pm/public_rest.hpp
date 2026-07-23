@@ -15,6 +15,7 @@ struct PublicRestConfig {
 
 namespace public_rest_protocol {
 
+    std::string server_time_target();
     std::string book_target(std::string_view token_id);
     std::string event_by_slug_target(std::string_view slug);
 
@@ -39,6 +40,7 @@ public:
     PublicRestClient(PublicRestClient&&) noexcept = default;
     PublicRestClient& operator=(PublicRestClient&&) noexcept = default;
 
+    net::HttpResponse get_server_time();
     net::HttpResponse get_book(std::string_view token_id);
     net::HttpResponse get_event_by_slug(std::string_view slug);
 

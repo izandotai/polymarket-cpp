@@ -32,6 +32,11 @@ namespace {
 
 namespace public_rest_protocol {
 
+    std::string server_time_target()
+    {
+        return "/time";
+    }
+
     std::string book_target(std::string_view token_id)
     {
         if (!decimal_token_id(token_id))
@@ -66,6 +71,11 @@ PublicRestClient::PublicRestClient(GetHandler clob_get, GetHandler gamma_get)
     if (!clob_get_ || !gamma_get_)
         throw std::invalid_argument(
             "pm: public REST transports must be configured");
+}
+
+net::HttpResponse PublicRestClient::get_server_time()
+{
+    return clob_get_(public_rest_protocol::server_time_target());
 }
 
 net::HttpResponse PublicRestClient::get_book(std::string_view token_id)
