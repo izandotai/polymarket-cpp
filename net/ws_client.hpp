@@ -65,6 +65,10 @@ public:
     void kick(const char* reason = "stale");
     // Thread-safe; queued while disconnected, flushed after connect.
     void send(std::string text);
+    // Thread-safe priority write for an on_open subscription/authentication
+    // frame. When called by on_open, it precedes messages retained from the
+    // previous connection.
+    void send_first(std::string text);
 
     bool connected() const
     {

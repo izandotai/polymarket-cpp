@@ -85,6 +85,16 @@ void WsClient::send(std::string text)
         });
 }
 
+void WsClient::send_first(std::string text)
+{
+    asio::dispatch(
+        strand_, [self = shared_from_this(), msg = std::move(text)]() mutable {
+            self->write_queue_.push_front(std::move(msg));
+            if (self->connected_ && !self->writing_)
+                self->do_write();
+        });
+}
+
 void WsClient::fail(const beast::error_code& ec, const char* what)
 {
     if (stopped_)
@@ -183,7 +193,8 @@ void WsClient::do_connect()
                                         self->reconnect_delay_ms_ = 500;
                                         if (self->on_open_)
                                             self->on_open_();
-                                        if (!self->write_queue_.empty())
+                                        if (!self->write_queue_.empty()
+                                            && !self->writing_)
                                             self->do_write();
                                         self->schedule_keepalive();
                                         self->do_read();

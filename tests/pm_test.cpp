@@ -29,6 +29,7 @@
 #include "pm/relayer.hpp"
 #include "pm/rtds.hpp"
 #include "pm/signing.hpp"
+#include "pm/user_ws.hpp"
 
 namespace {
 
@@ -86,6 +87,43 @@ TEST_CASE("market websocket dynamic subscription preserves reviewed ordering")
     CHECK(change.remove == std::vector<std::string> { "1", "5" });
     CHECK(pm::market_ws_protocol::delta({ "1", "2" }, { "1", "2" })
         == pm::market_ws_protocol::SubscriptionDelta {});
+}
+
+TEST_CASE("user websocket protocol stays byte-for-byte compatible")
+{
+    const pm::ApiCreds creds {
+        "offline-api-key",
+        "offline-secret",
+        "offline-passphrase",
+    };
+    const std::vector<std::string> initial { "0xcondition-a", "0xcondition-b" };
+    CHECK(pm::user_ws_protocol::initial_subscription(creds, initial)
+        == R"({"auth":{"apiKey":"offline-api-key","secret":"offline-secret","passphrase":"offline-passphrase"},"markets":["0xcondition-a","0xcondition-b"],"type":"user"})");
+    CHECK(pm::user_ws_protocol::subscribe({ "0xcondition-c" })
+        == R"({"operation":"subscribe","markets":["0xcondition-c"]})");
+    CHECK(pm::user_ws_protocol::unsubscribe({ "0xcondition-a" })
+        == R"({"operation":"unsubscribe","markets":["0xcondition-a"]})");
+}
+
+TEST_CASE("user websocket dynamic subscription preserves reviewed ordering")
+{
+    const auto change = pm::user_ws_protocol::delta(
+        { "0xcondition-b", "0xcondition-c", "0xcondition-d" },
+        { "0xcondition-a", "0xcondition-b", "0xcondition-e" });
+    CHECK(change.add
+        == std::vector<std::string> {
+            "0xcondition-c",
+            "0xcondition-d",
+        });
+    CHECK(change.remove
+        == std::vector<std::string> {
+            "0xcondition-a",
+            "0xcondition-e",
+        });
+    CHECK(pm::user_ws_protocol::delta(
+              { "0xcondition-a", "0xcondition-b" },
+              { "0xcondition-a", "0xcondition-b" })
+        == pm::user_ws_protocol::SubscriptionDelta {});
 }
 
 TEST_CASE("public REST client pins credential-free routes and response bytes")
@@ -954,6 +992,96 @@ TEST_CASE("live: market websocket applies dynamic changes and reconnects")
     CHECK(kicked.load());
     CHECK(opens.load() >= 2);
     CHECK(messages.load() >= 3);
+    CHECK(recovered.load());
+}
+
+// PM_LIVE_TESTS=1 PM_LIVE_USER_API_KEY=... PM_LIVE_USER_SECRET=...
+//   PM_LIVE_USER_PASSPHRASE=... PM_LIVE_USER_MARKET=0x...
+//   build/pm_tests.exe -tc="live: user websocket applies*"
+TEST_CASE("live: user websocket applies dynamic changes and reconnects")
+{
+    if (!std::getenv("PM_LIVE_TESTS")) {
+        MESSAGE("skipped (set PM_LIVE_TESTS=1 to run against the live venue)");
+        return;
+    }
+    const char* api_key = std::getenv("PM_LIVE_USER_API_KEY");
+    const char* secret = std::getenv("PM_LIVE_USER_SECRET");
+    const char* passphrase = std::getenv("PM_LIVE_USER_PASSPHRASE");
+    const char* market = std::getenv("PM_LIVE_USER_MARKET");
+    if (!api_key || !secret || !passphrase || !market) {
+        MESSAGE("skipped (set all PM_LIVE_USER variables)");
+        return;
+    }
+
+    boost::asio::io_context ioc;
+    pm::UserWs user(
+        ioc, pm::ApiCreds { api_key, secret, passphrase });
+    boost::asio::steady_timer unsubscribe_delay(ioc);
+    boost::asio::steady_timer subscribe_delay(ioc);
+    boost::asio::steady_timer reconnect_delay(ioc);
+    boost::asio::steady_timer recovery_delay(ioc);
+    boost::asio::steady_timer deadline(ioc, std::chrono::seconds(20));
+    const std::string condition_id(market);
+    std::atomic<int> opens { 0 };
+    std::atomic<bool> dynamic_stable { false };
+    std::atomic<bool> kicked { false };
+    std::atomic<bool> recovered { false };
+
+    user.set_on_open([&] {
+        const int current_open = ++opens;
+        if (current_open == 1) {
+            unsubscribe_delay.expires_after(std::chrono::milliseconds(500));
+            unsubscribe_delay.async_wait(
+                [&](const boost::system::error_code& error) {
+                    if (!error)
+                        user.subscribe({});
+                });
+            subscribe_delay.expires_after(std::chrono::seconds(1));
+            subscribe_delay.async_wait(
+                [&](const boost::system::error_code& error) {
+                    if (!error)
+                        user.subscribe({ condition_id });
+                });
+            reconnect_delay.expires_after(std::chrono::milliseconds(1500));
+            reconnect_delay.async_wait(
+                [&](const boost::system::error_code& error) {
+                    if (!error && opens.load() == 1 && user.connected()) {
+                        dynamic_stable = true;
+                        kicked = true;
+                        // Leave a dynamic operation at the old connection
+                        // boundary. The reconnect must prioritize the full
+                        // authenticated subscription ahead of this stale
+                        // queue entry.
+                        user.subscribe({});
+                        user.kick("user websocket live-test reconnect");
+                    }
+                });
+        } else {
+            unsubscribe_delay.cancel();
+            subscribe_delay.cancel();
+            reconnect_delay.cancel();
+            recovery_delay.expires_after(std::chrono::milliseconds(500));
+            recovery_delay.async_wait(
+                [&](const boost::system::error_code& error) {
+                    if (!error && user.connected()) {
+                        recovered = true;
+                        deadline.cancel();
+                        user.stop();
+                    }
+                });
+        }
+    });
+    deadline.async_wait([&](const boost::system::error_code& error) {
+        if (!error)
+            user.stop();
+    });
+    user.subscribe({ condition_id });
+    user.start();
+    ioc.run();
+
+    CHECK(dynamic_stable.load());
+    CHECK(kicked.load());
+    CHECK(opens.load() >= 2);
     CHECK(recovered.load());
 }
 
