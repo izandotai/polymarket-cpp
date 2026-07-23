@@ -53,6 +53,10 @@ namespace {
         std::string orderID;
     };
 
+    struct HeartbeatBody {
+        std::string heartbeat_id;
+    };
+
     // salt = random() * now_ms, the reference client's distribution.
     uint64_t generate_salt()
     {
@@ -92,6 +96,11 @@ namespace {
         return out;
     }
 
+}
+
+std::string build_heartbeat_request(std::string_view heartbeat_id)
+{
+    return to_json(HeartbeatBody { std::string(heartbeat_id) });
 }
 
 ClobClient::ClobClient(const ClobConfig& cfg)
@@ -317,6 +326,14 @@ std::string ClobClient::cancel_all()
         http_.request(boost::beast::http::verb::delete_, "/cancel-all", "",
             l2_now("DELETE", "/cancel-all", ""), "application/json"),
         "cancel-all");
+}
+
+std::string ClobClient::post_heartbeat(const std::string& heartbeat_id)
+{
+    const std::string body = build_heartbeat_request(heartbeat_id);
+    const std::string path(kHeartbeatPath);
+    return require_200(
+        http_.post(path, body, l2_now("POST", path, body)), "heartbeat");
 }
 
 std::string ClobClient::get_open_orders()

@@ -564,6 +564,30 @@ TEST_CASE("L2 headers are reproducible byte for byte")
     CHECK(h[1].second == pm::b64url_encode(mac));
 }
 
+TEST_CASE("heartbeat request matches py-clob-client-v2")
+{
+    pm::ApiCreds creds;
+    creds.api_key = "test-key";
+    creds.passphrase = "test-pass";
+    creds.secret = "SmVmZQ==";
+    const auto address = pm::eth_address_from_hex(kTestAddr);
+
+    const std::string initial = pm::build_heartbeat_request();
+    CHECK(pm::kHeartbeatPath == "/v1/heartbeats");
+    CHECK(initial == R"({"heartbeat_id":""})");
+    const auto initial_headers = pm::l2_headers(creds, address, 1752900000,
+        "POST", std::string(pm::kHeartbeatPath), initial);
+    CHECK(initial_headers[1].second
+        == "jjmrWzPb2PTlwq55iGI6h_l1EGUfbdQ3AILkFDVR4vw=");
+
+    const std::string chained = pm::build_heartbeat_request("hb-123");
+    CHECK(chained == R"({"heartbeat_id":"hb-123"})");
+    const auto chained_headers = pm::l2_headers(creds, address, 1752900000,
+        "POST", std::string(pm::kHeartbeatPath), chained);
+    CHECK(chained_headers[1].second
+        == "gDHOTxFv3Z-ntfk_YT9gxIbKxPyXNj0rISWNo34NH3w=");
+}
+
 TEST_CASE("amount arithmetic mirrors the reference builder")
 {
     using pm::Side;

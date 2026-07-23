@@ -3,6 +3,7 @@
 #include <cstdint>
 #include <optional>
 #include <string>
+#include <string_view>
 
 #include "net/http_client.hpp"
 #include "pm/auth.hpp"
@@ -11,6 +12,11 @@
 #include "pm/types.hpp"
 
 namespace pm {
+
+inline constexpr std::string_view kHeartbeatPath = "/v1/heartbeats";
+
+// Exact compact JSON signed and sent by py-clob-client-v2.
+std::string build_heartbeat_request(std::string_view heartbeat_id = {});
 
 // Everything the client needs to talk to the venue. Hosts default to
 // production; credentials may be supplied up front or derived lazily
@@ -69,6 +75,7 @@ public:
     std::string place_order(const PlaceOrderArgs& args);
     std::string cancel_order(const std::string& order_id);
     std::string cancel_all();
+    std::string post_heartbeat(const std::string& heartbeat_id = "");
     std::string get_open_orders();
     std::string get_balance_allowance(
         const std::string& asset_type, const std::string& token_id = "");

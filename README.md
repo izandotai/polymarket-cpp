@@ -29,7 +29,8 @@ vector.
   read/write methods. Construction never deploys or executes a Batch.
 - `pm/clob` — a synchronous venue client: market data, credential
   creation and derivation, order placement (EOA and ERC-1271 paths),
-  cancels, balances and the gamma catalogue.
+  cancels, balances, the `/v1/heartbeats` dead-man request and the gamma
+  catalogue.
 - `pm/market_ws`, `pm/user_ws`, `pm/rtds` — the three live sockets on
   a reconnecting, write-queued WSS client (`net/ws_client`), with the
   venue's undocumented behaviours written down where they bit:
@@ -60,6 +61,8 @@ Nothing is asserted on faith:
 - Deposit-wallet addresses, resolution branches, Batch signatures, request
   JSON, and builder HMAC headers against Polymarket's official
   `py-builder-relayer-client`.
+- Heartbeat endpoint, compact JSON and initial/chained HMAC vectors against
+  Polymarket's official `py-clob-client-v2`.
 
 ```
 cmake -S . -B build -G Ninja
