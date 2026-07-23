@@ -31,6 +31,8 @@ vector.
   creation and derivation, order placement (EOA and ERC-1271 paths),
   cancels, balances, the `/v1/heartbeats` dead-man request and the gamma
   catalogue.
+- `pm/public_rest` — credential-free CLOB books and Gamma event lookup,
+  with raw status/body passthrough for application-owned error mapping.
 - `pm/market_ws`, `pm/user_ws`, `pm/rtds` — the three live sockets on
   a reconnecting, write-queued WSS client (`net/ws_client`), with the
   venue's undocumented behaviours written down where they bit:

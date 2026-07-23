@@ -23,6 +23,7 @@
 #include "pm/deposit_wallet_rpc.hpp"
 #include "pm/keys.hpp"
 #include "pm/market_ws.hpp"
+#include "pm/public_rest.hpp"
 #include "pm/relayer.hpp"
 #include "pm/rtds.hpp"
 #include "pm/signing.hpp"
@@ -83,6 +84,36 @@ TEST_CASE("market websocket dynamic subscription preserves reviewed ordering")
     CHECK(change.remove == std::vector<std::string> { "1", "5" });
     CHECK(pm::market_ws_protocol::delta({ "1", "2" }, { "1", "2" })
         == pm::market_ws_protocol::SubscriptionDelta {});
+}
+
+TEST_CASE("public REST client pins credential-free routes and response bytes")
+{
+    std::vector<std::string> requests;
+    pm::PublicRestClient client(
+        [&](const std::string& target) {
+            requests.push_back("clob:" + target);
+            return pm::net::HttpResponse { 404, R"({"error":"book"})" };
+        },
+        [&](const std::string& target) {
+            requests.push_back("gamma:" + target);
+            return pm::net::HttpResponse { 503, "temporarily unavailable" };
+        });
+
+    const auto book = client.get_book("123");
+    CHECK(book.status == 404);
+    CHECK(book.body == R"({"error":"book"})");
+    const auto event = client.get_event_by_slug("btc-updown-5m-1784712300");
+    CHECK(event.status == 503);
+    CHECK(event.body == "temporarily unavailable");
+    CHECK(requests
+        == std::vector<std::string> {
+            "clob:/book?token_id=123",
+            "gamma:/events/slug/btc-updown-5m-1784712300",
+        });
+
+    CHECK_THROWS_AS(client.get_book("not-a-token"), std::invalid_argument);
+    CHECK_THROWS_AS(
+        client.get_event_by_slug("../event"), std::invalid_argument);
 }
 
 TEST_CASE("a private key knows its own address")
@@ -663,6 +694,34 @@ TEST_CASE("live: the venue answers public market data without credentials")
     CHECK(t > 1752900000000); // after mid-2026: the clock is sane
     const std::string markets = client.gamma_get("/markets?limit=1");
     CHECK(markets.find("question") != std::string::npos);
+}
+
+// PM_LIVE_TESTS=1 PM_LIVE_EVENT_SLUG=<active event slug>
+//   PM_LIVE_MARKET_TOKEN=<active token id> build/pm_tests.exe
+//   -tc="live: credential-free public REST*"
+TEST_CASE("live: credential-free public REST returns event and book")
+{
+    if (!std::getenv("PM_LIVE_TESTS")) {
+        MESSAGE("skipped (set PM_LIVE_TESTS=1 to run against the live venue)");
+        return;
+    }
+    const char* slug = std::getenv("PM_LIVE_EVENT_SLUG");
+    const char* token_id = std::getenv("PM_LIVE_MARKET_TOKEN");
+    if (!slug || !token_id) {
+        MESSAGE("skipped (set PM_LIVE_EVENT_SLUG and PM_LIVE_MARKET_TOKEN)");
+        return;
+    }
+
+    pm::PublicRestClient client;
+    const auto event = client.get_event_by_slug(slug);
+    REQUIRE(event.status == 200);
+    CHECK(event.body.find(slug) != std::string::npos);
+
+    const auto book = client.get_book(token_id);
+    REQUIRE(book.status == 200);
+    CHECK(book.body.find(token_id) != std::string::npos);
+    CHECK(book.body.find("\"bids\"") != std::string::npos);
+    CHECK(book.body.find("\"asks\"") != std::string::npos);
 }
 
 // PM_LIVE_TESTS=1 PM_LIVE_MARKET_TOKEN=<active token id>

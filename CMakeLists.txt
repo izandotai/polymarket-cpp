@@ -78,6 +78,13 @@ if(WIN32)
     target_link_libraries(pm_net PUBLIC ws2_32 mswsock crypt32)
 endif()
 
+add_library(pm_public_rest STATIC
+    pm/public_rest.cpp
+)
+add_library(pm::public_rest ALIAS pm_public_rest)
+target_include_directories(pm_public_rest PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+target_link_libraries(pm_public_rest PUBLIC pm_net)
+
 add_library(pm_wallet STATIC
     pm/deposit_wallet_rpc.cpp
     pm/relayer.cpp
@@ -111,6 +118,7 @@ if(PROJECT_IS_TOP_LEVEL)
     target_link_libraries(pm_tests PRIVATE
         pm::clob
         pm::feeds
+        pm::public_rest
         pm::wallet
         doctest::doctest
     )
