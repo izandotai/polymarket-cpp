@@ -79,6 +79,17 @@ TEST_CASE("market websocket protocol stays byte-for-byte compatible")
         == R"({"assets_ids":["1"],"operation":"unsubscribe"})");
 }
 
+TEST_CASE("production CLOB V2 collateral and exchange constants match the official SDK")
+{
+    CHECK(std::string_view(pm::kPusd)
+        == "0xC011a7E12a19f7B1f670d46F03B03f3342E82DFB");
+    CHECK(pm::kPusdDecimals == 6);
+    CHECK(std::string_view(pm::kExchangeV2)
+        == "0xE111180000d2663C0091e4f400237545B87B996B");
+    CHECK(std::string_view(pm::kNegRiskExchangeV2)
+        == "0xe2222d279d744050d28e00520010520000310F59");
+}
+
 TEST_CASE("market websocket dynamic subscription preserves reviewed ordering")
 {
     const auto change

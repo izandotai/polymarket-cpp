@@ -11,6 +11,13 @@ namespace pm {
 
 inline constexpr uint64_t kChainId = 137;
 
+// CLOB V2 collateral is pUSD, not native USDC or bridged USDC.e.
+// Keep this beside the V2 exchange constants so adapters cannot
+// accidentally reconcile or approve a legacy collateral contract.
+inline constexpr const char* kPusd
+    = "0xC011a7E12a19f7B1f670d46F03B03f3342E82DFB";
+inline constexpr uint8_t kPusdDecimals = 6;
+
 // The V2 CTF Exchange pair; every order is signed against exactly one
 // of these domains, and the venue rejects a digest built for the
 // other — neg-risk markets live on their own contract.
