@@ -17,6 +17,8 @@ namespace public_rest_protocol {
 
     std::string server_time_target();
     std::string book_target(std::string_view token_id);
+    std::string fee_rate_target(std::string_view token_id);
+    std::string clob_market_info_target(std::string_view condition_id);
     std::string event_by_slug_target(std::string_view slug);
 
 }
@@ -42,6 +44,8 @@ public:
 
     net::HttpResponse get_server_time();
     net::HttpResponse get_book(std::string_view token_id);
+    net::HttpResponse get_fee_rate(std::string_view token_id);
+    net::HttpResponse get_clob_market_info(std::string_view condition_id);
     net::HttpResponse get_event_by_slug(std::string_view slug);
 
 private:

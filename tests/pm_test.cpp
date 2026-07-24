@@ -156,6 +156,13 @@ TEST_CASE("public REST client pins credential-free routes and response bytes")
     const auto book = client.get_book("123");
     CHECK(book.status == 404);
     CHECK(book.body == R"({"error":"book"})");
+    const auto fee = client.get_fee_rate("123");
+    CHECK(fee.status == 404);
+    CHECK(fee.body == R"({"error":"book"})");
+    const auto market = client.get_clob_market_info(
+        "0x0123456789abcdef0123456789ABCDEF0123456789abcdef0123456789ABCDEF");
+    CHECK(market.status == 404);
+    CHECK(market.body == R"({"error":"book"})");
     const auto event = client.get_event_by_slug("btc-updown-5m-1784712300");
     CHECK(event.status == 503);
     CHECK(event.body == "temporarily unavailable");
@@ -163,10 +170,19 @@ TEST_CASE("public REST client pins credential-free routes and response bytes")
         == std::vector<std::string> {
             "clob:/time",
             "clob:/book?token_id=123",
+            "clob:/fee-rate/123",
+            "clob:/clob-markets/"
+            "0x0123456789abcdef0123456789ABCDEF0123456789abcdef0123456789ABCDEF",
             "gamma:/events/slug/btc-updown-5m-1784712300",
         });
 
     CHECK_THROWS_AS(client.get_book("not-a-token"), std::invalid_argument);
+    CHECK_THROWS_AS(client.get_fee_rate("not-a-token"), std::invalid_argument);
+    CHECK_THROWS_AS(client.get_clob_market_info("0x1234"), std::invalid_argument);
+    CHECK_THROWS_AS(
+        client.get_clob_market_info(
+            "0xZ123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"),
+        std::invalid_argument);
     CHECK_THROWS_AS(
         client.get_event_by_slug("../event"), std::invalid_argument);
 }
@@ -911,7 +927,8 @@ TEST_CASE("live: geoblock one-shot transport accepts the production response")
 }
 
 // PM_LIVE_TESTS=1 PM_LIVE_EVENT_SLUG=<active event slug>
-//   PM_LIVE_MARKET_TOKEN=<active token id> build/pm_tests.exe
+//   PM_LIVE_MARKET_TOKEN=<active token id>
+//   PM_LIVE_CONDITION_ID=<active condition id> build/pm_tests.exe
 //   -tc="live: credential-free public REST*"
 TEST_CASE("live: credential-free public REST returns event and book")
 {
@@ -921,8 +938,10 @@ TEST_CASE("live: credential-free public REST returns event and book")
     }
     const char* slug = std::getenv("PM_LIVE_EVENT_SLUG");
     const char* token_id = std::getenv("PM_LIVE_MARKET_TOKEN");
-    if (!slug || !token_id) {
-        MESSAGE("skipped (set PM_LIVE_EVENT_SLUG and PM_LIVE_MARKET_TOKEN)");
+    const char* condition_id = std::getenv("PM_LIVE_CONDITION_ID");
+    if (!slug || !token_id || !condition_id) {
+        MESSAGE("skipped (set PM_LIVE_EVENT_SLUG, PM_LIVE_MARKET_TOKEN, "
+                "and PM_LIVE_CONDITION_ID)");
         return;
     }
 
@@ -942,6 +961,15 @@ TEST_CASE("live: credential-free public REST returns event and book")
     CHECK(book.body.find(token_id) != std::string::npos);
     CHECK(book.body.find("\"bids\"") != std::string::npos);
     CHECK(book.body.find("\"asks\"") != std::string::npos);
+
+    const auto fee_rate = client.get_fee_rate(token_id);
+    REQUIRE(fee_rate.status == 200);
+    CHECK(fee_rate.body.find("\"base_fee\"") != std::string::npos);
+
+    const auto market_info = client.get_clob_market_info(condition_id);
+    REQUIRE(market_info.status == 200);
+    CHECK(market_info.body.find(token_id) != std::string::npos);
+    CHECK(market_info.body.find("\"fd\"") != std::string::npos);
 }
 
 // PM_LIVE_TESTS=1 PM_LIVE_MARKET_TOKEN=<active token id>

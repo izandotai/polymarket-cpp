@@ -17,6 +17,17 @@ namespace {
                });
     }
 
+    bool condition_id(std::string_view value)
+    {
+        return value.size() == 66 && value.starts_with("0x")
+            && std::ranges::all_of(
+                value.substr(2), [](unsigned char character) {
+                    return (character >= '0' && character <= '9')
+                        || (character >= 'a' && character <= 'f')
+                        || (character >= 'A' && character <= 'F');
+                });
+    }
+
     bool event_slug(std::string_view value)
     {
         return !value.empty()
@@ -43,6 +54,22 @@ namespace public_rest_protocol {
             throw std::invalid_argument(
                 "pm: public book token id must be decimal");
         return "/book?token_id=" + std::string(token_id);
+    }
+
+    std::string fee_rate_target(std::string_view token_id)
+    {
+        if (!decimal_token_id(token_id))
+            throw std::invalid_argument(
+                "pm: public fee-rate token id must be decimal");
+        return "/fee-rate/" + std::string(token_id);
+    }
+
+    std::string clob_market_info_target(std::string_view condition_id_value)
+    {
+        if (!condition_id(condition_id_value))
+            throw std::invalid_argument(
+                "pm: public CLOB market condition id must be 0x-prefixed hex");
+        return "/clob-markets/" + std::string(condition_id_value);
     }
 
     std::string event_by_slug_target(std::string_view slug)
@@ -81,6 +108,18 @@ net::HttpResponse PublicRestClient::get_server_time()
 net::HttpResponse PublicRestClient::get_book(std::string_view token_id)
 {
     return clob_get_(public_rest_protocol::book_target(token_id));
+}
+
+net::HttpResponse PublicRestClient::get_fee_rate(std::string_view token_id)
+{
+    return clob_get_(public_rest_protocol::fee_rate_target(token_id));
+}
+
+net::HttpResponse PublicRestClient::get_clob_market_info(
+    std::string_view condition_id)
+{
+    return clob_get_(
+        public_rest_protocol::clob_market_info_target(condition_id));
 }
 
 net::HttpResponse PublicRestClient::get_event_by_slug(std::string_view slug)
