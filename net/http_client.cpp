@@ -6,7 +6,7 @@
 #include <boost/beast/http.hpp>
 #include <openssl/ssl.h>
 
-#include <chrono>
+#include <stdexcept>
 
 #include "net/tls.hpp"
 
@@ -16,20 +16,6 @@ namespace beast = boost::beast;
 namespace http = beast::http;
 namespace asio = boost::asio;
 using tcp = asio::ip::tcp;
-
-namespace {
-
-// Keep the public client synchronous, but drive asynchronous operations here.
-// Beast tcp_stream deadlines are only effective for async_* operations; the
-// old synchronous implementation could therefore wait forever on a silent
-// keep-alive socket.
-constexpr auto resolve_timeout = std::chrono::seconds(10);
-constexpr auto connect_timeout = std::chrono::seconds(10);
-constexpr auto handshake_timeout = std::chrono::seconds(10);
-constexpr auto write_timeout = std::chrono::seconds(15);
-constexpr auto read_timeout = std::chrono::seconds(30);
-
-} // namespace
 
 HttpsUrl parse_https_url(std::string_view url)
 {
@@ -56,10 +42,18 @@ HttpsUrl parse_https_url(std::string_view url)
     return out;
 }
 
-HttpsClient::HttpsClient(std::string host, std::string port)
+HttpsClient::HttpsClient(std::string host, std::string port,
+    HttpsClientOptions options)
     : m_host(std::move(host))
     , m_port(std::move(port))
+    , m_options(std::move(options))
 {
+    if (m_options.resolve_timeout <= std::chrono::milliseconds::zero()
+        || m_options.connect_timeout <= std::chrono::milliseconds::zero()
+        || m_options.handshake_timeout <= std::chrono::milliseconds::zero()
+        || m_options.write_timeout <= std::chrono::milliseconds::zero()
+        || m_options.read_timeout <= std::chrono::milliseconds::zero())
+        throw std::invalid_argument("HttpsClient timeouts must be positive");
 }
 
 HttpsClient::~HttpsClient()
@@ -93,7 +87,7 @@ void HttpsClient::connect()
             resolved = true;
         });
     m_ioc.restart();
-    m_ioc.run_for(resolve_timeout);
+    m_ioc.run_for(m_options.resolve_timeout);
     if (!resolved) {
         // The resolver has no tcp_stream deadline. Cancel and drain its
         // handler before references to this stack frame can expire.
@@ -106,7 +100,7 @@ void HttpsClient::connect()
         throw beast::system_error(ec, "resolve");
 
     auto& lowest = beast::get_lowest_layer(*m_stream);
-    lowest.expires_after(connect_timeout);
+    lowest.expires_after(m_options.connect_timeout);
     lowest.async_connect(results,
         [&](const beast::error_code& error,
             const tcp::resolver::results_type::endpoint_type&) { ec = error; });
@@ -119,7 +113,7 @@ void HttpsClient::connect()
     if (ec)
         throw beast::system_error(ec, "setsockopt SO_KEEPALIVE");
 
-    lowest.expires_after(handshake_timeout);
+    lowest.expires_after(m_options.handshake_timeout);
     m_stream->async_handshake(asio::ssl::stream_base::client,
         [&](const beast::error_code& error) { ec = error; });
     m_ioc.restart();
@@ -161,7 +155,7 @@ HttpResponse HttpsClient::do_request(http::verb method,
 
     beast::error_code ec;
     auto& lowest = beast::get_lowest_layer(*m_stream);
-    lowest.expires_after(write_timeout);
+    lowest.expires_after(m_options.write_timeout);
     http::async_write(*m_stream, req,
         [&](const beast::error_code& error, std::size_t) { ec = error; });
     m_ioc.restart();
@@ -174,7 +168,7 @@ HttpResponse HttpsClient::do_request(http::verb method,
     // JSON-RPC eth_getLogs responses routinely exceed Beast's conservative
     // one-megabyte string_body default. Keep an explicit finite ceiling.
     parser.body_limit(16 * 1024 * 1024);
-    lowest.expires_after(read_timeout);
+    lowest.expires_after(m_options.read_timeout);
     http::async_read(*m_stream, buffer, parser,
         [&](const beast::error_code& error, std::size_t) { ec = error; });
     m_ioc.restart();
@@ -194,13 +188,18 @@ HttpResponse HttpsClient::request(http::verb method, const std::string& target,
     const std::string& body, const Headers& headers,
     const std::string& content_type)
 {
-    try {
-        return do_request(method, target, body, headers, content_type);
-    } catch (const std::exception&) {
-        // Keep-alive connections die server-side; reconnect and retry
-        // once before giving up.
-        close();
-        return do_request(method, target, body, headers, content_type);
+    for (std::size_t attempt = 0;; ++attempt) {
+        try {
+            return do_request(method, target, body, headers, content_type);
+        } catch (const std::exception&) {
+            // Keep-alive connections can die server-side. Callers that use
+            // persistent clients retain the historical one-retry default,
+            // while latency-sensitive public-data services can opt out and
+            // perform endpoint-aware retries at their own layer.
+            close();
+            if (attempt >= m_options.retry_count)
+                throw;
+        }
     }
 }
 

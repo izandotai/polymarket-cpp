@@ -6,6 +6,8 @@
 #include <boost/beast/ssl/ssl_stream.hpp>
 
 #include <memory>
+#include <chrono>
+#include <cstddef>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -20,6 +22,15 @@ struct HttpResponse {
 };
 
 using Headers = std::vector<std::pair<std::string, std::string>>;
+
+struct HttpsClientOptions {
+    std::chrono::milliseconds resolve_timeout { 10'000 };
+    std::chrono::milliseconds connect_timeout { 10'000 };
+    std::chrono::milliseconds handshake_timeout { 10'000 };
+    std::chrono::milliseconds write_timeout { 15'000 };
+    std::chrono::milliseconds read_timeout { 30'000 };
+    std::size_t retry_count = 1;
+};
 
 // Pieces of an https:// URL as the client consumes them.
 struct HttpsUrl {
@@ -37,7 +48,8 @@ HttpsUrl parse_https_url(std::string_view url);
 // per thread — no internal locking.
 class HttpsClient {
 public:
-    explicit HttpsClient(std::string host, std::string port = "443");
+    explicit HttpsClient(std::string host, std::string port = "443",
+        HttpsClientOptions options = {});
     ~HttpsClient();
 
     HttpsClient(const HttpsClient&) = delete;
@@ -67,6 +79,7 @@ private:
 
     std::string m_host;
     std::string m_port;
+    HttpsClientOptions m_options;
     boost::asio::io_context m_ioc;
     std::unique_ptr<Stream> m_stream;
 };

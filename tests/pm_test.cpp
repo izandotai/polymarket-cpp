@@ -102,6 +102,22 @@ TEST_CASE("https URL parsing is strict and preserves the request target")
         std::invalid_argument);
 }
 
+TEST_CASE("HTTPS client accepts bounded per-caller transport policy")
+{
+    pm::net::HttpsClientOptions bounded{
+        .resolve_timeout = std::chrono::milliseconds{1'000},
+        .connect_timeout = std::chrono::milliseconds{1'000},
+        .handshake_timeout = std::chrono::milliseconds{1'000},
+        .write_timeout = std::chrono::milliseconds{1'000},
+        .read_timeout = std::chrono::milliseconds{1'000},
+        .retry_count = 0,
+    };
+    CHECK_NOTHROW(pm::net::HttpsClient("example.test", "443", bounded));
+    bounded.read_timeout = std::chrono::milliseconds::zero();
+    CHECK_THROWS_AS(pm::net::HttpsClient("example.test", "443", bounded),
+        std::invalid_argument);
+}
+
 TEST_CASE("market websocket exposes a transport activity callback")
 {
     boost::asio::io_context ioc;
