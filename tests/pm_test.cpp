@@ -30,6 +30,7 @@
 #include "pm/rtds.hpp"
 #include "pm/signing.hpp"
 #include "pm/user_ws.hpp"
+#include "net/http_client.hpp"
 
 namespace {
 
@@ -77,6 +78,39 @@ TEST_CASE("market websocket protocol stays byte-for-byte compatible")
         == R"({"assets_ids":["3"],"operation":"subscribe","custom_feature_enabled":true})");
     CHECK(pm::market_ws_protocol::unsubscribe({ "1" })
         == R"({"assets_ids":["1"],"operation":"unsubscribe"})");
+}
+
+TEST_CASE("https URL parsing is strict and preserves the request target")
+{
+    const auto default_port
+        = pm::net::parse_https_url("https://clob.polymarket.com");
+    CHECK(default_port.host == "clob.polymarket.com");
+    CHECK(default_port.port == "443");
+    CHECK(default_port.target == "/");
+
+    const auto explicit_port = pm::net::parse_https_url(
+        "https://example.test:8443/path/to/book?token_id=42");
+    CHECK(explicit_port.host == "example.test");
+    CHECK(explicit_port.port == "8443");
+    CHECK(explicit_port.target == "/path/to/book?token_id=42");
+
+    CHECK_THROWS_AS(pm::net::parse_https_url("http://example.test"),
+        std::invalid_argument);
+    CHECK_THROWS_AS(pm::net::parse_https_url("https:///missing-host"),
+        std::invalid_argument);
+    CHECK_THROWS_AS(pm::net::parse_https_url("https://example.test:"),
+        std::invalid_argument);
+}
+
+TEST_CASE("market websocket exposes a transport activity callback")
+{
+    boost::asio::io_context ioc;
+    pm::MarketWs market(ioc);
+    bool observed = false;
+    market.set_on_activity([&] { observed = true; });
+    CHECK_FALSE(observed);
+    market.stop();
+    ioc.run();
 }
 
 TEST_CASE("production CLOB V2 collateral and exchange constants match the official SDK")

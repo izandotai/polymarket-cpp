@@ -83,6 +83,8 @@ MarketWs::MarketWs(boost::asio::io_context& ioc, std::string host)
     // and answers "PONG".
     ws_->set_keepalive(std::chrono::seconds(10), "PING");
     ws_->set_on_message([this](std::string_view msg) {
+        if (on_activity_)
+            on_activity_();
         if (msg == "PONG")
             return;
         if (on_raw_)

@@ -6,6 +6,8 @@
 #include <boost/beast/http.hpp>
 #include <openssl/ssl.h>
 
+#include <chrono>
+
 #include "net/tls.hpp"
 
 namespace pm::net {
@@ -14,6 +16,20 @@ namespace beast = boost::beast;
 namespace http = beast::http;
 namespace asio = boost::asio;
 using tcp = asio::ip::tcp;
+
+namespace {
+
+// Keep the public client synchronous, but drive asynchronous operations here.
+// Beast tcp_stream deadlines are only effective for async_* operations; the
+// old synchronous implementation could therefore wait forever on a silent
+// keep-alive socket.
+constexpr auto resolve_timeout = std::chrono::seconds(10);
+constexpr auto connect_timeout = std::chrono::seconds(10);
+constexpr auto handshake_timeout = std::chrono::seconds(10);
+constexpr auto write_timeout = std::chrono::seconds(15);
+constexpr auto read_timeout = std::chrono::seconds(30);
+
+} // namespace
 
 HttpsUrl parse_https_url(std::string_view url)
 {
@@ -60,14 +76,57 @@ void HttpsClient::connect()
         throw beast::system_error(beast::error_code(int(::ERR_get_error()),
                                       asio::error::get_ssl_category()),
             "SNI");
-    SSL_set1_host(m_stream->native_handle(), m_host.c_str());
+    if (SSL_set1_host(m_stream->native_handle(), m_host.c_str()) != 1)
+        throw beast::system_error(beast::error_code(int(::ERR_get_error()),
+                                      asio::error::get_ssl_category()),
+            "TLS hostname verification");
 
     tcp::resolver resolver(m_ioc);
-    auto results = resolver.resolve(m_host, m_port);
-    beast::get_lowest_layer(*m_stream).expires_after(std::chrono::seconds(10));
-    beast::get_lowest_layer(*m_stream).connect(results);
-    m_stream->handshake(asio::ssl::stream_base::client);
-    beast::get_lowest_layer(*m_stream).expires_never();
+    beast::error_code ec;
+    tcp::resolver::results_type results;
+    bool resolved = false;
+    resolver.async_resolve(m_host, m_port,
+        [&](const beast::error_code& error,
+            tcp::resolver::results_type resolved_results) {
+            ec = error;
+            results = std::move(resolved_results);
+            resolved = true;
+        });
+    m_ioc.restart();
+    m_ioc.run_for(resolve_timeout);
+    if (!resolved) {
+        // The resolver has no tcp_stream deadline. Cancel and drain its
+        // handler before references to this stack frame can expire.
+        resolver.cancel();
+        m_ioc.restart();
+        m_ioc.run();
+        throw beast::system_error(beast::error::timeout, "resolve");
+    }
+    if (ec)
+        throw beast::system_error(ec, "resolve");
+
+    auto& lowest = beast::get_lowest_layer(*m_stream);
+    lowest.expires_after(connect_timeout);
+    lowest.async_connect(results,
+        [&](const beast::error_code& error,
+            const tcp::resolver::results_type::endpoint_type&) { ec = error; });
+    m_ioc.restart();
+    m_ioc.run();
+    if (ec)
+        throw beast::system_error(ec, "connect");
+
+    lowest.socket().set_option(asio::socket_base::keep_alive(true), ec);
+    if (ec)
+        throw beast::system_error(ec, "setsockopt SO_KEEPALIVE");
+
+    lowest.expires_after(handshake_timeout);
+    m_stream->async_handshake(asio::ssl::stream_base::client,
+        [&](const beast::error_code& error) { ec = error; });
+    m_ioc.restart();
+    m_ioc.run();
+    if (ec)
+        throw beast::system_error(ec, "tls handshake");
+    lowest.expires_never();
 }
 
 void HttpsClient::close() noexcept
@@ -100,13 +159,30 @@ HttpResponse HttpsClient::do_request(http::verb method,
         req.prepare_payload();
     }
 
-    beast::get_lowest_layer(*m_stream).expires_after(std::chrono::seconds(15));
-    http::write(*m_stream, req);
+    beast::error_code ec;
+    auto& lowest = beast::get_lowest_layer(*m_stream);
+    lowest.expires_after(write_timeout);
+    http::async_write(*m_stream, req,
+        [&](const beast::error_code& error, std::size_t) { ec = error; });
+    m_ioc.restart();
+    m_ioc.run();
+    if (ec)
+        throw beast::system_error(ec, "write");
 
     beast::flat_buffer buffer;
-    http::response<http::string_body> res;
-    http::read(*m_stream, buffer, res);
-    beast::get_lowest_layer(*m_stream).expires_never();
+    http::response_parser<http::string_body> parser;
+    // JSON-RPC eth_getLogs responses routinely exceed Beast's conservative
+    // one-megabyte string_body default. Keep an explicit finite ceiling.
+    parser.body_limit(16 * 1024 * 1024);
+    lowest.expires_after(read_timeout);
+    http::async_read(*m_stream, buffer, parser,
+        [&](const beast::error_code& error, std::size_t) { ec = error; });
+    m_ioc.restart();
+    m_ioc.run();
+    if (ec)
+        throw beast::system_error(ec, "read");
+    auto res = parser.release();
+    lowest.expires_never();
 
     if (res.need_eof() || !res.keep_alive())
         close();

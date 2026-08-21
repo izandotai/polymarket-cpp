@@ -11,6 +11,7 @@
 
 #include <atomic>
 #include <chrono>
+#include <cstdint>
 #include <deque>
 #include <functional>
 #include <memory>
@@ -78,13 +79,17 @@ public:
 private:
     using WsStream = boost::beast::websocket::stream<
         boost::beast::ssl_stream<boost::beast::tcp_stream>>;
+    using ReadBuffer = boost::beast::flat_buffer;
 
     void do_connect();
-    void do_read();
-    void do_write();
+    void do_read(const std::shared_ptr<WsStream>& stream,
+        const std::shared_ptr<ReadBuffer>& buffer, std::uint64_t generation);
+    void do_write(const std::shared_ptr<WsStream>& stream,
+        std::uint64_t generation);
     void schedule_reconnect();
     void schedule_keepalive();
-    void fail(const boost::beast::error_code& ec, const char* what);
+    void fail(const boost::beast::error_code& ec, const char* what,
+        std::uint64_t generation);
     void log(std::string msg);
 
     boost::asio::strand<boost::asio::io_context::executor_type> strand_;
@@ -92,21 +97,19 @@ private:
     std::string port_;
     std::string target_;
 
-    std::unique_ptr<WsStream> ws_;
-    boost::beast::flat_buffer buffer_;
+    std::shared_ptr<WsStream> ws_;
     std::deque<std::string> write_queue_;
     bool writing_ = false;
     boost::asio::steady_timer reconnect_timer_;
     boost::asio::steady_timer keepalive_timer_;
+    boost::asio::steady_timer connect_stage_timer_;
     std::chrono::milliseconds keepalive_interval_ { 0 };
     std::string keepalive_text_;
     int reconnect_delay_ms_ = 500;
+    bool reconnect_scheduled_ = false;
+    std::uint64_t generation_ = 0;
     std::atomic<bool> connected_ { false };
     std::atomic<bool> stopped_ { false };
-    // Set by kick(): the read failure that follows our own close is
-    // an expected echo, not an outage.
-    std::atomic<bool> kicked_ { false };
-
     MessageHandler on_message_;
     OpenHandler on_open_;
     LogHandler on_log_;

@@ -23,6 +23,7 @@ class MarketWs {
 public:
     using RawHandler = std::function<void(std::string_view)>;
     using OpenHandler = std::function<void()>;
+    using ActivityHandler = std::function<void()>;
 
     explicit MarketWs(boost::asio::io_context& ioc,
         std::string host = "ws-subscriptions-clob.polymarket.com");
@@ -35,6 +36,13 @@ public:
     void set_on_message(RawHandler h)
     {
         on_raw_ = std::move(h);
+    }
+
+    // Fires for every application-level frame, including PONG frames which
+    // are intentionally hidden from the market-data parser.
+    void set_on_activity(ActivityHandler h)
+    {
+        on_activity_ = std::move(h);
     }
 
     // Fires after the full desired subscription has been queued on
@@ -67,6 +75,7 @@ private:
     std::vector<std::string> desired_;
     std::vector<std::string> active_; // what the server has acknowledged
     RawHandler on_raw_;
+    ActivityHandler on_activity_;
     OpenHandler on_open_;
 };
 
