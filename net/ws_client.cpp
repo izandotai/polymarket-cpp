@@ -51,6 +51,7 @@ void WsClient::stop()
         self->stopped_ = true;
         self->connected_ = false;
         self->writing_ = false;
+        self->write_queue_.clear();
         ++self->generation_;
         self->reconnect_scheduled_ = false;
         self->reconnect_timer_.cancel();
@@ -85,6 +86,7 @@ void WsClient::kick(const char* reason)
         beast::get_lowest_layer(*self->ws_).socket().close(ec);
         self->connected_ = false;
         self->writing_ = false;
+        self->write_queue_.discard_connection_writes(self->generation_);
         ++self->generation_;
         self->schedule_reconnect();
     });
@@ -94,7 +96,12 @@ void WsClient::send(std::string text)
 {
     asio::post(
         strand_, [self = shared_from_this(), msg = std::move(text)]() mutable {
-            self->write_queue_.push_back(std::move(msg));
+            if (!self->write_queue_.push_retained(std::move(msg))) {
+                self->log(std::format(
+                    "ws {}{}: bounded write queue full; retained message rejected",
+                    self->host_, self->target_));
+                return;
+            }
             if (self->connected_ && !self->writing_)
                 self->do_write(self->ws_, self->generation_);
         });
@@ -104,7 +111,13 @@ void WsClient::send_first(std::string text)
 {
     asio::dispatch(
         strand_, [self = shared_from_this(), msg = std::move(text)]() mutable {
-            self->write_queue_.push_front(std::move(msg));
+            if (!self->write_queue_.push_connection(
+                    std::move(msg), self->generation_, true)) {
+                self->log(std::format(
+                    "ws {}{}: bounded write queue full; connection frame rejected",
+                    self->host_, self->target_));
+                return;
+            }
             if (self->connected_ && !self->writing_)
                 self->do_write(self->ws_, self->generation_);
         });
@@ -122,6 +135,7 @@ void WsClient::fail(const beast::error_code& ec, const char* what,
         ec.value(), ec.category().name()));
     connected_ = false;
     writing_ = false;
+    write_queue_.discard_connection_writes(generation);
     ++generation_;
     schedule_reconnect();
 }
@@ -256,6 +270,9 @@ void WsClient::do_connect()
                                             std::format("ws {}{}: connected",
                                                 self->host_, self->target_));
                                         self->connected_ = true;
+                                        self->write_queue_
+                                            .discard_stale_connection_writes(
+                                                generation);
                                         if (self->on_open_)
                                             self->on_open_();
                                         if (!self->write_queue_.empty()
@@ -279,7 +296,12 @@ void WsClient::schedule_keepalive()
         [self = shared_from_this()](const beast::error_code& ec) {
             if (ec || self->stopped_ || !self->connected_)
                 return;
-            self->write_queue_.push_back(self->keepalive_text_);
+            if (!self->write_queue_.push_connection(
+                    self->keepalive_text_, self->generation_, false)) {
+                self->log(std::format(
+                    "ws {}{}: bounded write queue full; keepalive skipped",
+                    self->host_, self->target_));
+            }
             if (!self->writing_)
                 self->do_write(self->ws_, self->generation_);
             self->schedule_keepalive();
@@ -317,14 +339,15 @@ void WsClient::do_write(const std::shared_ptr<WsStream>& stream,
         return;
     }
     writing_ = true;
-    stream->async_write(asio::buffer(write_queue_.front()),
-        [self = shared_from_this(), stream, generation](
+    const auto payload = write_queue_.front_payload();
+    stream->async_write(asio::buffer(*payload),
+        [self = shared_from_this(), stream, payload, generation](
             const beast::error_code& ec, std::size_t) {
             if (generation != self->generation_)
                 return;
             if (ec)
                 return self->fail(ec, "write", generation);
-            self->write_queue_.pop_front();
+            self->write_queue_.complete(payload);
             self->do_write(stream, generation);
         });
 }

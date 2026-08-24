@@ -12,10 +12,11 @@
 #include <atomic>
 #include <chrono>
 #include <cstdint>
-#include <deque>
 #include <functional>
 #include <memory>
 #include <string>
+
+#include "net/ws_write_queue.hpp"
 
 namespace pm::net {
 
@@ -64,11 +65,12 @@ public:
     // log hook — pass a business reason for intentional reconnects so
     // the log does not read as an outage.
     void kick(const char* reason = "stale");
-    // Thread-safe; queued while disconnected, flushed after connect.
+    // Thread-safe; regular messages are retained across reconnects, up to the
+    // bounded queue capacity, and flushed after connect.
     void send(std::string text);
     // Thread-safe priority write for an on_open subscription/authentication
-    // frame. When called by on_open, it precedes messages retained from the
-    // previous connection.
+    // frame. These frames are scoped to the current connection generation;
+    // stale control frames are discarded instead of replayed after reconnect.
     void send_first(std::string text);
 
     bool connected() const
@@ -98,7 +100,7 @@ private:
     std::string target_;
 
     std::shared_ptr<WsStream> ws_;
-    std::deque<std::string> write_queue_;
+    detail::WsWriteQueue write_queue_;
     bool writing_ = false;
     boost::asio::steady_timer reconnect_timer_;
     boost::asio::steady_timer keepalive_timer_;

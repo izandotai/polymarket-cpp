@@ -6,6 +6,8 @@
 #define DOCTEST_CONFIG_IMPLEMENT_WITH_MAIN
 #include <doctest/doctest.h>
 
+#include "net/ws_write_queue.hpp"
+
 #include <boost/asio/steady_timer.hpp>
 
 #include <span>
@@ -116,6 +118,39 @@ TEST_CASE("HTTPS client accepts bounded per-caller transport policy")
     bounded.read_timeout = std::chrono::milliseconds::zero();
     CHECK_THROWS_AS(pm::net::HttpsClient("example.test", "443", bounded),
         std::invalid_argument);
+}
+
+TEST_CASE("websocket write queue is bounded and connection-generation scoped")
+{
+    pm::net::detail::WsWriteQueue queue(5, 1);
+    CHECK(queue.push_retained("retained-1"));
+    CHECK(queue.push_retained("retained-2"));
+    CHECK(queue.push_retained("retained-3"));
+    CHECK(queue.push_retained("retained-4"));
+    CHECK_FALSE(queue.push_retained("retained-overflow"));
+
+    CHECK(queue.push_connection("subscription-generation-1", 1, true));
+    CHECK(*queue.front_payload() == "subscription-generation-1");
+    CHECK(queue.size() == 5);
+
+    // Opening a new socket generation removes the stale subscription but
+    // keeps regular messages that were explicitly queued while disconnected.
+    CHECK(queue.push_connection("subscription-generation-2", 2, true));
+    CHECK(*queue.front_payload() == "subscription-generation-2");
+    CHECK(queue.size() == 5);
+    queue.discard_connection_writes(2);
+    CHECK(queue.size() == 4);
+    CHECK(*queue.front_payload() == "retained-1");
+
+    const auto retained_in_flight = queue.front_payload();
+    CHECK(queue.push_connection("priority-during-write", 2, true));
+    CHECK(*queue.front_payload() == "priority-during-write");
+    queue.complete(retained_in_flight);
+    CHECK(*queue.front_payload() == "priority-during-write");
+    queue.pop_front();
+    CHECK(*queue.front_payload() == "retained-2");
+    queue.clear();
+    CHECK(queue.empty());
 }
 
 TEST_CASE("market websocket exposes a transport activity callback")
