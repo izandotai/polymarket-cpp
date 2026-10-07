@@ -28,6 +28,7 @@ public:
     using MessageHandler = std::function<void(std::string_view)>;
     using OpenHandler = std::function<void()>;
     using LogHandler = std::function<void(std::string_view)>;
+    using StopHandler = std::function<void()>;
 
     WsClient(boost::asio::io_context& ioc, std::string host, std::string port,
         std::string target);
@@ -59,7 +60,10 @@ public:
     }
 
     void start();
-    void stop();
+    // Completion runs on the client's strand after timers, the socket and
+    // application callbacks have been retired. The owner may then destroy its
+    // wrapper without leaving callbacks that capture it.
+    void stop(StopHandler completion = {});
     // Force-drop the current connection (does not stop the client),
     // triggering the reconnect path. Thread-safe. `reason` reaches the
     // log hook — pass a business reason for intentional reconnects so

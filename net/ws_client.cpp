@@ -45,51 +45,57 @@ void WsClient::start()
         strand_, [self = shared_from_this()] { self->do_connect(); });
 }
 
-void WsClient::stop()
+void WsClient::stop(StopHandler completion)
 {
-    asio::dispatch(strand_, [self = shared_from_this()] {
-        self->stopped_ = true;
-        self->connected_ = false;
-        self->writing_ = false;
-        self->write_queue_.clear();
-        ++self->generation_;
-        self->reconnect_scheduled_ = false;
-        self->reconnect_timer_.cancel();
-        self->keepalive_timer_.cancel();
-        self->connect_stage_timer_.cancel();
-        if (self->ws_) {
-            beast::error_code ec;
-            beast::get_lowest_layer(*self->ws_).socket().close(ec);
-            self->ws_.reset();
-        }
-    });
+    asio::dispatch(strand_,
+        [self = shared_from_this(), completion = std::move(completion)] {
+            self->stopped_ = true;
+            self->connected_ = false;
+            self->writing_ = false;
+            self->write_queue_.clear();
+            ++self->generation_;
+            self->reconnect_scheduled_ = false;
+            self->reconnect_timer_.cancel();
+            self->keepalive_timer_.cancel();
+            self->connect_stage_timer_.cancel();
+            if (self->ws_) {
+                beast::error_code ec;
+                ec = beast::get_lowest_layer(*self->ws_).socket().close(ec);
+                self->ws_.reset();
+            }
+            self->on_message_ = {};
+            self->on_open_ = {};
+            self->on_log_ = {};
+            if (completion)
+                completion();
+        });
 }
 
 void WsClient::kick(const char* reason)
 {
     std::string reason_text = reason ? reason : "stale";
-    asio::dispatch(strand_,
-        [self = shared_from_this(), reason = std::move(reason_text)] {
-        if (!self->ws_ || self->stopped_)
-            return;
-        // Only an ESTABLISHED connection may be kicked. Kicking during
-        // the reconnect path (backoff timer, TCP/TLS/WS handshake)
-        // kills the self-healing: a watchdog stomping every few
-        // seconds will abort every handshake forever. A hung handshake
-        // is already bounded by the connect stage's expires_after.
-        if (!self->connected_)
-            return;
-        self->log(std::format("ws {}{}: kicked ({}), forcing reconnect",
-            self->host_, self->target_, reason));
-        self->connect_stage_timer_.cancel();
-        beast::error_code ec;
-        beast::get_lowest_layer(*self->ws_).socket().close(ec);
-        self->connected_ = false;
-        self->writing_ = false;
-        self->write_queue_.discard_connection_writes(self->generation_);
-        ++self->generation_;
-        self->schedule_reconnect();
-    });
+    asio::dispatch(
+        strand_, [self = shared_from_this(), reason = std::move(reason_text)] {
+            if (!self->ws_ || self->stopped_)
+                return;
+            // Only an ESTABLISHED connection may be kicked. Kicking during
+            // the reconnect path (backoff timer, TCP/TLS/WS handshake)
+            // kills the self-healing: a watchdog stomping every few
+            // seconds will abort every handshake forever. A hung handshake
+            // is already bounded by the connect stage's expires_after.
+            if (!self->connected_)
+                return;
+            self->log(std::format("ws {}{}: kicked ({}), forcing reconnect",
+                self->host_, self->target_, reason));
+            self->connect_stage_timer_.cancel();
+            beast::error_code ec;
+            ec = beast::get_lowest_layer(*self->ws_).socket().close(ec);
+            self->connected_ = false;
+            self->writing_ = false;
+            self->write_queue_.discard_connection_writes(self->generation_);
+            ++self->generation_;
+            self->schedule_reconnect();
+        });
 }
 
 void WsClient::send(std::string text)
@@ -97,8 +103,8 @@ void WsClient::send(std::string text)
     asio::post(
         strand_, [self = shared_from_this(), msg = std::move(text)]() mutable {
             if (!self->write_queue_.push_retained(std::move(msg))) {
-                self->log(std::format(
-                    "ws {}{}: bounded write queue full; retained message rejected",
+                self->log(std::format("ws {}{}: bounded write queue full; "
+                                      "retained message rejected",
                     self->host_, self->target_));
                 return;
             }
@@ -113,8 +119,8 @@ void WsClient::send_first(std::string text)
         strand_, [self = shared_from_this(), msg = std::move(text)]() mutable {
             if (!self->write_queue_.push_connection(
                     std::move(msg), self->generation_, true)) {
-                self->log(std::format(
-                    "ws {}{}: bounded write queue full; connection frame rejected",
+                self->log(std::format("ws {}{}: bounded write queue full; "
+                                      "connection frame rejected",
                     self->host_, self->target_));
                 return;
             }
@@ -123,8 +129,8 @@ void WsClient::send_first(std::string text)
         });
 }
 
-void WsClient::fail(const beast::error_code& ec, const char* what,
-    std::uint64_t generation)
+void WsClient::fail(
+    const beast::error_code& ec, const char* what, std::uint64_t generation)
 {
     if (stopped_ || generation != generation_)
         return;
@@ -149,14 +155,14 @@ void WsClient::schedule_reconnect()
     keepalive_timer_.cancel();
     if (ws_) {
         beast::error_code ec;
-        beast::get_lowest_layer(*ws_).socket().close(ec);
+        ec = beast::get_lowest_layer(*ws_).socket().close(ec);
         ws_.reset();
     }
-    const auto seed = std::hash<std::string>{}(host_ + target_)
+    const auto seed = std::hash<std::string> {}(host_ + target_)
         ^ (generation_ * std::uint64_t { 0x9E3779B97F4A7C15ULL });
     const auto jitter_window_ms = std::max(25, reconnect_delay_ms_ / 5);
-    const auto jitter_ms = static_cast<int>(seed
-        % static_cast<std::uint64_t>(jitter_window_ms + 1));
+    const auto jitter_ms = static_cast<int>(
+        seed % static_cast<std::uint64_t>(jitter_window_ms + 1));
     const auto delay_ms = std::min(30'000, reconnect_delay_ms_ + jitter_ms);
     log(std::format("ws {}{}: reconnecting in {} ms (base {} + jitter {})",
         host_, target_, delay_ms, reconnect_delay_ms_, jitter_ms));
@@ -192,8 +198,8 @@ void WsClient::do_connect()
     }
     if (SSL_set1_host(stream->next_layer().native_handle(), host_.c_str())
         != 1) {
-        log(std::format("ws {}: TLS hostname verification setup failed",
-            host_));
+        log(std::format(
+            "ws {}: TLS hostname verification setup failed", host_));
         ++generation_;
         schedule_reconnect();
         return;
@@ -201,22 +207,21 @@ void WsClient::do_connect()
 
     auto resolver = std::make_shared<tcp::resolver>(strand_);
     connect_stage_timer_.expires_after(std::chrono::seconds(15));
-    connect_stage_timer_.async_wait(
-        [self = shared_from_this(), resolver, stream, generation](
-            const beast::error_code& ec) {
-            if (ec || self->stopped_ || generation != self->generation_
-                || self->connected_)
-                return;
-            self->log(std::format(
-                "ws {}{}: connect stage deadline exceeded", self->host_,
-                self->target_));
-            resolver->cancel();
-            beast::error_code close_ec;
-            beast::get_lowest_layer(*stream).socket().close(close_ec);
-            self->writing_ = false;
-            ++self->generation_;
-            self->schedule_reconnect();
-        });
+    connect_stage_timer_.async_wait([self = shared_from_this(), resolver,
+                                        stream, generation](
+                                        const beast::error_code& ec) {
+        if (ec || self->stopped_ || generation != self->generation_
+            || self->connected_)
+            return;
+        self->log(std::format("ws {}{}: connect stage deadline exceeded",
+            self->host_, self->target_));
+        resolver->cancel();
+        beast::error_code close_ec;
+        close_ec = beast::get_lowest_layer(*stream).socket().close(close_ec);
+        self->writing_ = false;
+        ++self->generation_;
+        self->schedule_reconnect();
+    });
     resolver->async_resolve(host_, port_,
         [self = shared_from_this(), resolver, stream, buffer, generation](
             const beast::error_code& ec, tcp::resolver::results_type results) {
@@ -224,66 +229,59 @@ void WsClient::do_connect()
                 return;
             if (ec)
                 return self->fail(ec, "resolve", generation);
-            beast::get_lowest_layer(*stream)
-                .expires_after(std::chrono::seconds(10));
-            beast::get_lowest_layer(*stream)
-                .async_connect(results,
-                    [self, stream, buffer, generation](
-                        const beast::error_code& ec2,
-                        const tcp::resolver::results_type::endpoint_type&) {
-                        if (generation != self->generation_)
-                            return;
-                        if (ec2)
-                            return self->fail(ec2, "connect", generation);
-                        stream->next_layer().async_handshake(
-                            asio::ssl::stream_base::client,
-                            [self, stream, buffer, generation](
-                                const beast::error_code& ec3) {
-                                if (generation != self->generation_)
-                                    return;
-                                if (ec3)
-                                    return self->fail(
-                                        ec3, "tls handshake", generation);
-                                beast::get_lowest_layer(*stream)
-                                    .expires_never();
-                                stream->set_option(
-                                    websocket::stream_base::timeout::suggested(
-                                        beast::role_type::client));
-                                stream->set_option(
-                                    websocket::stream_base::decorator(
-                                        [](websocket::request_type& req) {
-                                            req.set(
-                                                beast::http::field::user_agent,
-                                                "polymarket-cpp/0.1");
-                                        }));
-                                stream->async_handshake(self->host_,
-                                    self->target_,
-                                    [self, stream, buffer, generation](
-                                        const beast::error_code& ec4) {
-                                        if (generation != self->generation_)
-                                            return;
-                                        if (ec4)
-                                            return self->fail(
-                                                ec4, "ws handshake", generation);
-                                        self->connect_stage_timer_.cancel();
-                                        self->log(
-                                            std::format("ws {}{}: connected",
-                                                self->host_, self->target_));
-                                        self->connected_ = true;
-                                        self->write_queue_
-                                            .discard_stale_connection_writes(
-                                                generation);
-                                        if (self->on_open_)
-                                            self->on_open_();
-                                        if (!self->write_queue_.empty()
-                                            && !self->writing_)
-                                            self->do_write(stream, generation);
-                                        self->schedule_keepalive();
-                                        self->do_read(
-                                            stream, buffer, generation);
-                                    });
-                            });
-                    });
+            beast::get_lowest_layer(*stream).expires_after(
+                std::chrono::seconds(10));
+            beast::get_lowest_layer(*stream).async_connect(results,
+                [self, stream, buffer, generation](const beast::error_code& ec2,
+                    const tcp::resolver::results_type::endpoint_type&) {
+                    if (generation != self->generation_)
+                        return;
+                    if (ec2)
+                        return self->fail(ec2, "connect", generation);
+                    stream->next_layer().async_handshake(
+                        asio::ssl::stream_base::client,
+                        [self, stream, buffer, generation](
+                            const beast::error_code& ec3) {
+                            if (generation != self->generation_)
+                                return;
+                            if (ec3)
+                                return self->fail(
+                                    ec3, "tls handshake", generation);
+                            beast::get_lowest_layer(*stream).expires_never();
+                            stream->set_option(
+                                websocket::stream_base::timeout::suggested(
+                                    beast::role_type::client));
+                            stream->set_option(
+                                websocket::stream_base::decorator(
+                                    [](websocket::request_type& req) {
+                                        req.set(beast::http::field::user_agent,
+                                            "polymarket-cpp/0.1");
+                                    }));
+                            stream->async_handshake(self->host_, self->target_,
+                                [self, stream, buffer, generation](
+                                    const beast::error_code& ec4) {
+                                    if (generation != self->generation_)
+                                        return;
+                                    if (ec4)
+                                        return self->fail(
+                                            ec4, "ws handshake", generation);
+                                    self->connect_stage_timer_.cancel();
+                                    self->log(std::format("ws {}{}: connected",
+                                        self->host_, self->target_));
+                                    self->connected_ = true;
+                                    self->write_queue_
+                                        .discard_stale_connection_writes(
+                                            generation);
+                                    if (self->on_open_)
+                                        self->on_open_();
+                                    if (!self->write_queue_.empty()
+                                        && !self->writing_)
+                                        self->do_write(stream, generation);
+                                    self->schedule_keepalive();
+                                    self->do_read(stream, buffer, generation);
+                                });
+                        });
+                });
         });
 }
 
@@ -331,8 +329,8 @@ void WsClient::do_read(const std::shared_ptr<WsStream>& stream,
         });
 }
 
-void WsClient::do_write(const std::shared_ptr<WsStream>& stream,
-    std::uint64_t generation)
+void WsClient::do_write(
+    const std::shared_ptr<WsStream>& stream, std::uint64_t generation)
 {
     if (generation != generation_ || write_queue_.empty() || !connected_) {
         writing_ = false;

@@ -1,5 +1,6 @@
 #include "pm/signing.hpp"
 
+#include <stdexcept>
 #include <string>
 
 namespace pm {
@@ -18,12 +19,25 @@ namespace {
 
 Hash32 exchange_domain_v2(bool neg_risk)
 {
+    return exchange_domain(OrderProtocol::ctf_v2, neg_risk);
+}
+
+Hash32 exchange_domain(OrderProtocol protocol, bool neg_risk)
+{
     static const Hash32 kDomain
         = e712::domain_separator("Polymarket CTF Exchange", "2", kChainId,
             eth_address_from_hex(kExchangeV2));
     static const Hash32 kDomainNegRisk
         = e712::domain_separator("Polymarket CTF Exchange", "2", kChainId,
             eth_address_from_hex(kNegRiskExchangeV2));
+    static const Hash32 kPositionDomain
+        = e712::domain_separator("Polymarket CTF Exchange", "3", kChainId,
+            eth_address_from_hex(kExchangeV3));
+    if (protocol == OrderProtocol::position_v3)
+        return kPositionDomain; // One V3 exchange, including neg-risk
+                                // positions.
+    if (protocol != OrderProtocol::ctf_v2)
+        throw std::invalid_argument("pm: unsupported order protocol");
     return neg_risk ? kDomainNegRisk : kDomain;
 }
 
@@ -51,8 +65,19 @@ Hash32 order_struct_hash_v2(const OrderV2& o)
 
 Hash32 order_digest_v2(const OrderV2& o, bool neg_risk)
 {
+    return order_digest(o, OrderProtocol::ctf_v2, neg_risk);
+}
+
+Hash32 order_digest(const OrderV2& o, OrderProtocol protocol, bool neg_risk)
+{
     return e712::typed_digest(
-        exchange_domain_v2(neg_risk), order_struct_hash_v2(o));
+        exchange_domain(protocol, neg_risk), order_struct_hash_v2(o));
+}
+
+EthSignature sign_order(
+    const PrivKey& key, const OrderV2& o, OrderProtocol protocol, bool neg_risk)
+{
+    return key.sign_digest(order_digest(o, protocol, neg_risk));
 }
 
 EthSignature sign_order_v2(const PrivKey& key, const OrderV2& o, bool neg_risk)
@@ -62,6 +87,13 @@ EthSignature sign_order_v2(const PrivKey& key, const OrderV2& o, bool neg_risk)
 
 Bytes sign_order_v2_1271(const PrivKey& owner_key, const OrderV2& o,
     const EthAddress& wallet, bool neg_risk)
+{
+    return sign_order_1271(
+        owner_key, o, wallet, OrderProtocol::ctf_v2, neg_risk);
+}
+
+Bytes sign_order_1271(const PrivKey& owner_key, const OrderV2& o,
+    const EthAddress& wallet, OrderProtocol protocol, bool neg_risk)
 {
     // Solady's TypedDataSign: the wallet re-derives this exact nested
     // digest on-chain, so every constant here is consensus-checked.
@@ -74,7 +106,7 @@ Bytes sign_order_v2_1271(const PrivKey& owner_key, const OrderV2& o,
     static const Hash32 kVersionHash = e712::keccak256(std::string_view("1"));
 
     const Hash32 contents_hash = order_struct_hash_v2(o);
-    const Hash32 app_domain = exchange_domain_v2(neg_risk);
+    const Hash32 app_domain = exchange_domain(protocol, neg_risk);
 
     Bytes buf;
     buf.reserve(7 * 32);

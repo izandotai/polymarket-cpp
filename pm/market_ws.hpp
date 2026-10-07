@@ -24,6 +24,7 @@ public:
     using RawHandler = std::function<void(std::string_view)>;
     using OpenHandler = std::function<void()>;
     using ActivityHandler = std::function<void()>;
+    using StopHandler = std::function<void()>;
 
     explicit MarketWs(boost::asio::io_context& ioc,
         std::string host = "ws-subscriptions-clob.polymarket.com");
@@ -55,7 +56,7 @@ public:
     void set_on_log(net::WsClient::LogHandler h);
 
     void start();
-    void stop();
+    void stop(StopHandler completion = {});
 
     void kick(const char* reason = "stale")
     {

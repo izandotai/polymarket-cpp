@@ -141,9 +141,9 @@ void MarketWs::start()
     ws_->start();
 }
 
-void MarketWs::stop()
+void MarketWs::stop(StopHandler completion)
 {
-    ws_->stop();
+    ws_->stop(std::move(completion));
 }
 
 }

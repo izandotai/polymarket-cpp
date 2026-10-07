@@ -16,6 +16,7 @@ namespace pm {
 
 // The authenticated user feed (order and trade events):
 //   wss://ws-subscriptions-clob.polymarket.com/ws/user
+    using StopHandler = std::function<void()>;
 class UserWs {
 public:
     using RawHandler = std::function<void(std::string_view)>;
@@ -51,7 +52,10 @@ public:
     void set_on_log(net::WsClient::LogHandler h);
 
     void start();
-    void stop();
+    // Completion runs after the underlying socket, timers and application
+    // callbacks have been retired. Owners must not destroy this wrapper before
+    // that fence fires.
+    void stop(StopHandler completion = {});
 
     void kick(const char* reason = "stale")
     {

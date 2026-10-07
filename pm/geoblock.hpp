@@ -1,5 +1,6 @@
 #pragma once
 
+#include <chrono>
 #include <cstddef>
 #include <functional>
 #include <string>
@@ -18,6 +19,21 @@ struct GeoblockConfig {
     std::string host = "polymarket.com";
     std::string port = "443";
     std::string user_agent = "polymarket-cpp/0.1";
+    net::HttpsClientOptions transport {
+        .resolve_timeout =
+            std::chrono::seconds(kGeoblockConnectTimeoutSeconds),
+        .connect_timeout =
+            std::chrono::seconds(kGeoblockConnectTimeoutSeconds),
+        .handshake_timeout =
+            std::chrono::seconds(kGeoblockConnectTimeoutSeconds),
+        .write_timeout =
+            std::chrono::seconds(kGeoblockReadTimeoutSeconds),
+        .read_timeout =
+            std::chrono::seconds(kGeoblockReadTimeoutSeconds),
+        .retry_count = 0,
+        .header_limit = kGeoblockHeaderLimit,
+        .body_limit = kGeoblockBodyLimit,
+    };
 };
 
 // The official geographic eligibility endpoint intentionally uses a fresh TLS

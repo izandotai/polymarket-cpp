@@ -1,8 +1,8 @@
 #include "pm/clob.hpp"
+#include "pm/protocol.hpp"
 
 #include <chrono>
 #include <cmath>
-#include <map>
 #include <stdexcept>
 
 #include <glaze/glaze.hpp>
@@ -10,7 +10,6 @@
 
 #include "pm/account_rest.hpp"
 #include "pm/amounts.hpp"
-#include "pm/codec.hpp"
 
 namespace pm {
 
@@ -173,7 +172,7 @@ std::string ClobClient::get_tick_size(const std::string& token_id)
     // numbers are normalised back to the table's key spelling.
     const std::string body = require_200(
         http_.get("/tick-size?token_id=" + token_id), "tick-size");
-    glz::json_t j;
+    glz::generic j;
     if (glz::read_json(j, body))
         throw std::runtime_error("pm: tick-size parse");
     const auto& v = j["minimum_tick_size"];
@@ -191,7 +190,7 @@ bool ClobClient::get_neg_risk(const std::string& token_id)
 {
     const std::string body
         = require_200(http_.get("/neg-risk?token_id=" + token_id), "neg-risk");
-    glz::json_t j;
+    glz::generic j;
     if (glz::read_json(j, body))
         throw std::runtime_error("pm: neg-risk parse");
     return j["neg_risk"].get_boolean();
@@ -199,7 +198,7 @@ bool ClobClient::get_neg_risk(const std::string& token_id)
 
 ApiCreds ClobClient::parse_creds(const std::string& body)
 {
-    glz::json_t j;
+    glz::generic j;
     if (glz::read_json(j, body))
         throw std::runtime_error("pm: creds parse");
     return ApiCreds { j["apiKey"].get_string(), j["secret"].get_string(),
@@ -230,17 +229,18 @@ std::string ClobClient::get_balance_allowance(
 std::string ClobClient::update_balance_allowance(
     const std::string& asset_type, const std::string& token_id)
 {
-    std::string q = "/balance-allowance/update?asset_type=" + asset_type
-        + "&signature_type=" + std::to_string(cfg_.signature_type);
-    if (!token_id.empty())
-        q += "&token_id=" + token_id;
+    std::string q = account_rest_protocol::balance_allowance_target(
+        cfg_.signature_type, asset_type, token_id);
+    q.insert(std::string_view("/balance-allowance").size(), "/update");
     return require_200(
         http_.get(q, l2_now("GET", "/balance-allowance/update", "")),
         "balance-allowance/update");
 }
 
-std::string ClobClient::place_order(const PlaceOrderArgs& args)
+PreparedOrder ClobClient::prepare_order(const PlaceOrderArgs& args)
 {
+    // Validate before any metadata/authentication request.
+    validate_order_asset(args.token_id, args.protocol);
     const std::string tick
         = args.tick_size ? *args.tick_size : get_tick_size(args.token_id);
     if (!valid_tick_size(tick))
@@ -276,11 +276,12 @@ std::string ClobClient::place_order(const PlaceOrderArgs& args)
 
     std::string signature_hex;
     if (cfg_.signature_type == 3) {
-        const Bytes sig
-            = sign_order_v2_1271(signer_, o, funder_addr_, neg_risk);
+        const Bytes sig = sign_order_1271(
+            signer_, o, funder_addr_, args.protocol, neg_risk);
         signature_hex = to_hex0x(sig.data(), sig.size());
     } else {
-        const EthSignature sig = sign_order_v2(signer_, o, neg_risk);
+        const EthSignature sig
+            = sign_order(signer_, o, args.protocol, neg_risk);
         signature_hex = to_hex0x(sig.data(), sig.size());
     }
 
@@ -304,10 +305,34 @@ std::string ClobClient::place_order(const PlaceOrderArgs& args)
     body.deferExec = args.defer_exec;
     body.postOnly = args.post_only;
 
-    const std::string body_str = to_json(body);
-    return require_200(
-        http_.post("/order", body_str, l2_now("POST", "/order", body_str)),
+    const auto digest = order_digest(o, args.protocol, neg_risk);
+    return { to_hex0x(digest.data(), digest.size()), to_json(body) };
+}
+
+std::string ClobClient::post_prepared_order(const PreparedOrder& prepared)
+{
+    if (prepared.order_id.size() != 66 || !prepared.order_id.starts_with("0x")
+        || prepared.order_id.find_first_not_of("0123456789abcdefABCDEF", 2)
+            != std::string::npos
+        || prepared.body.empty() || prepared.body.size() > 64 * 1024)
+        throw std::invalid_argument("pm: invalid prepared order");
+    return require_200(http_.post_once("/order", prepared.body,
+                           l2_now("POST", "/order", prepared.body)),
         "order");
+}
+
+std::string ClobClient::place_order(const PlaceOrderArgs& args)
+{
+    return post_prepared_order(prepare_order(args));
+}
+
+std::string ClobClient::cancel_order_once(const std::string& order_id)
+{
+    const std::string body = to_json(CancelBody { order_id });
+    return require_200(
+        http_.request_once(boost::beast::http::verb::delete_, "/order", body,
+            l2_now("DELETE", "/order", body), "application/json"),
+        "cancel");
 }
 
 std::string ClobClient::cancel_order(const std::string& order_id)
@@ -337,8 +362,7 @@ std::string ClobClient::post_heartbeat(const std::string& heartbeat_id)
 
 std::string ClobClient::get_open_orders()
 {
-    return require_200(http_.get(
-                           account_rest_protocol::open_orders_target(),
+    return require_200(http_.get(account_rest_protocol::open_orders_target(),
                            l2_now("GET", "/data/orders", "")),
         "orders");
 }

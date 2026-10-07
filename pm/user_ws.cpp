@@ -40,6 +40,14 @@ namespace {
         throw std::runtime_error("could not serialize user websocket message");
     }
 
+    void secure_clear(std::string& value) noexcept
+    {
+        volatile char* bytes = value.empty() ? nullptr : value.data();
+        for (std::size_t index = 0; index < value.size(); ++index)
+            bytes[index] = 0;
+        value.clear();
+    }
+
 }
 
 namespace user_ws_protocol {
@@ -152,9 +160,15 @@ void UserWs::start()
     ws_->start();
 }
 
-void UserWs::stop()
+void UserWs::stop(StopHandler completion)
 {
-    ws_->stop();
+    ws_->stop([this, completion = std::move(completion)]() mutable {
+        secure_clear(creds_.api_key);
+        secure_clear(creds_.secret);
+        secure_clear(creds_.passphrase);
+        if (completion)
+            completion();
+    });
 }
 
 }

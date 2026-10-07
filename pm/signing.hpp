@@ -26,6 +26,13 @@ inline constexpr const char* kExchangeV2
 inline constexpr const char* kNegRiskExchangeV2
     = "0xe2222d279d744050d28e00520010520000310F59";
 
+// Protocol V2 positions are a separate ledger; CTF holdings stay on V2.
+inline constexpr const char* kExchangeV3
+    = "0xe3333700CA9D93003F00f0f71F8515005F6c00AA";
+inline constexpr const char* kPositionManager
+    = "0x006f54F7F9A22E0000CC2ab60031000000aE9Fef";
+enum class OrderProtocol : uint8_t { ctf_v2 = 2, position_v3 = 3 };
+
 // The V1 pair, kept for completeness; new orders should target V2.
 inline constexpr const char* kExchangeV1
     = "0x4bFb41d5B3570DeFd03C39a9A4D8dE6Bd8B8982E";
@@ -56,8 +63,14 @@ struct OrderV2 {
 };
 
 Hash32 exchange_domain_v2(bool neg_risk);
+Hash32 exchange_domain(OrderProtocol, bool neg_risk = false);
 Hash32 order_struct_hash_v2(const OrderV2& o);
 Hash32 order_digest_v2(const OrderV2& o, bool neg_risk);
+Hash32 order_digest(const OrderV2&, OrderProtocol, bool neg_risk = false);
+EthSignature sign_order(
+    const PrivKey&, const OrderV2&, OrderProtocol, bool neg_risk = false);
+Bytes sign_order_1271(const PrivKey&, const OrderV2&, const EthAddress&,
+    OrderProtocol, bool neg_risk = false);
 
 // EOA signature over the order digest (signatureType 0).
 EthSignature sign_order_v2(const PrivKey& key, const OrderV2& o, bool neg_risk);

@@ -41,7 +41,9 @@ struct PlaceOrderArgs {
     std::string token_id;           // decimal string
     Side side = Side::Buy;
     double price = 0.0;             // 0..1, snapped to the market's tick size
-    double size = 0.0;              // outcome tokens
+    // Outcome shares for every TIF, including BUY FAK/FOK. This existing
+    // SDK entry is not the unified SDK's separate cash-budget market order.
+    double size = 0.0;
     std::string order_type = "GTC"; // GTC | FOK | GTD | FAK
     bool post_only = false;
     bool defer_exec = false;
@@ -50,6 +52,14 @@ struct PlaceOrderArgs {
     // round trip on hot paths.
     std::optional<std::string> tick_size;
     std::optional<bool> neg_risk;
+    // Select from verified Gamma market.version, never the current market when
+    // selling a retained lot. Existing callers keep their original CTF route.
+    OrderProtocol protocol = OrderProtocol::ctf_v2;
+};
+
+struct PreparedOrder {
+    std::string order_id;
+    std::string body;
 };
 
 // Synchronous CLOB client, py-clob-client parity: same rounding
@@ -72,8 +82,11 @@ public:
     ApiCreds derive_api_key(uint64_t nonce = 0);
 
     // ---- trading (L2) ----
+    PreparedOrder prepare_order(const PlaceOrderArgs& args);
+    std::string post_prepared_order(const PreparedOrder& prepared);
     std::string place_order(const PlaceOrderArgs& args);
     std::string cancel_order(const std::string& order_id);
+    std::string cancel_order_once(const std::string& order_id);
     std::string cancel_all();
     std::string post_heartbeat(const std::string& heartbeat_id = "");
     // Legacy raw first-page convenience. Uses the same official MA== cursor

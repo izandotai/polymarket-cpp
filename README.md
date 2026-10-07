@@ -80,3 +80,15 @@ links statically.
 ## License
 
 MIT.
+
+## Protocol V2 and Data API V2 maintenance
+
+Choose `PlaceOrderArgs.protocol` from verified Gamma `version`: `v1` uses `OrderProtocol::ctf_v2`; `v2` uses `OrderProtocol::position_v3` and the matching `positionIds` entry. Existing callers retain CTF V2 by default. Preserve that protocol with retained orders/lots; a newly selected market never changes an existing holding. V3 uses ExchangeV3/domain `3` and PositionManager; balance queries use `CONDITIONAL-V2`. No old balance is converted and no approval is submitted automatically.
+
+`PlaceOrderArgs.size` keeps its existing outcome-share units for every TIF, including BUY FAK/FOK. Marketable BUY keeps the existing shares-down/cash-cap-up rounding. Do not pass the cash amount accepted by the unified SDK's separate market-order API into this entry.
+
+`AccountRestClient::get_positions_v2_page` constructs the public `/v2/positions` request, at most twenty distinct conditions per cohort. The caller still owns complete cursor exhaustion, duplicate/scope validation and failure handling. CLOSED queries cannot include archived positions. Never treat an incomplete or failed read as zero holdings. Legacy offset helpers remain source-compatible during application migration; they are not a fallback for the retiring service.
+
+Native maintenance also incorporates the terminal integration's bounded shared HTTPS runtime, request deadlines, non-replayed signed writes, prepared orders, bounded geographic reads and completed WS shutdown/credential clearing. `PM_OPENSSL_ROOT` explicitly selects an existing static OpenSSL 3.5+ SDK; default builds still build the pinned source.
+
+References: [Protocol API migration](https://docs.polymarket.com/migrate/polymarket-v2/api-integrations), [contract migration](https://docs.polymarket.com/migrate/polymarket-v2/contract-integrations), [Data API migration](https://docs.polymarket.com/migrate/data-api-v1-to-v2). Verification covers the original native suite, 120 independent signing vectors across both protocols and wallet types, query boundaries/public-error passthrough, and 64 actual prepared-order combinations without network writes. See [oracle provenance](tests/fixtures/README.md). This is not a claim of application or real-money end-to-end readiness.

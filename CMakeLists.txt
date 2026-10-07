@@ -3,6 +3,9 @@ project(polymarket-cpp LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
+# No C++ module units: keep GCC builds and clangd's database free of
+# module-scanner arguments unsupported by other native compilers.
+set(CMAKE_CXX_SCAN_FOR_MODULES OFF)
 if(NOT CMAKE_BUILD_TYPE)
     set(CMAKE_BUILD_TYPE RelWithDebInfo)
 endif()
@@ -24,7 +27,7 @@ include(cmake/openssl.cmake)
 # arrive through izan-crypto, pinned by commit.
 FetchContent_Declare(izan_crypto
     GIT_REPOSITORY https://github.com/izandotai/izan-crypto.git
-    GIT_TAG 6ced820
+    GIT_TAG 8c6857d911da89a229e6a9911e984601e7cf15fa
     EXCLUDE_FROM_ALL
 )
 FetchContent_Declare(doctest
@@ -37,8 +40,11 @@ FetchContent_Declare(doctest
 set(BOOST_INCLUDE_LIBRARIES beast asio)
 set(BOOST_ENABLE_CMAKE ON)
 set(BOOST_SKIP_INSTALL_RULES ON)
+string(CONCAT PM_BOOST_ARCHIVE_URL
+    "https://github.com/boostorg/boost/releases/download/"
+    "boost-1.87.0/boost-1.87.0-cmake.tar.xz")
 FetchContent_Declare(Boost
-    URL https://github.com/boostorg/boost/releases/download/boost-1.87.0/boost-1.87.0-cmake.tar.xz
+    URL ${PM_BOOST_ARCHIVE_URL}
     DOWNLOAD_EXTRACT_TIMESTAMP ON
     EXCLUDE_FROM_ALL
 )
@@ -59,6 +65,7 @@ add_library(pm_core STATIC
     pm/codec.cpp
     pm/deposit_wallet.cpp
     pm/keys.cpp
+    pm/protocol.cpp
     pm/signing.cpp
 )
 add_library(pm::core ALIAS pm_core)
@@ -113,7 +120,8 @@ add_library(pm_clob STATIC
 )
 add_library(pm::clob ALIAS pm_clob)
 target_include_directories(pm_clob PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
-target_link_libraries(pm_clob PUBLIC pm_core pm_net PRIVATE pm_account_rest glaze::glaze)
+target_link_libraries(pm_clob PUBLIC pm_core pm_net
+    PRIVATE pm_account_rest glaze::glaze)
 
 # pm_feeds: the three live sockets — CLOB market books, the
 # authenticated user channel, and the real-time data socket.
@@ -126,7 +134,8 @@ add_library(pm::feeds ALIAS pm_feeds)
 target_include_directories(pm_feeds PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(pm_feeds PUBLIC pm_core pm_net PRIVATE glaze::glaze)
 
-if(PROJECT_IS_TOP_LEVEL)
+option(PM_BUILD_TESTS "Build polymarket-cpp tests" ${PROJECT_IS_TOP_LEVEL})
+if(PM_BUILD_TESTS)
     enable_testing()
     add_executable(pm_tests tests/pm_test.cpp)
     target_link_libraries(pm_tests PRIVATE
@@ -139,4 +148,12 @@ if(PROJECT_IS_TOP_LEVEL)
         doctest::doctest
     )
     add_test(NAME pm_tests COMMAND pm_tests)
+    add_executable(pm_protocol_tests tests/protocol_test.cpp)
+    target_link_libraries(pm_protocol_tests PRIVATE pm::clob pm::account_rest
+        doctest::doctest glaze::glaze)
+    set(PM_PROTOCOL_FIXTURE
+        "${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/protocol-signatures.json")
+    target_compile_definitions(pm_protocol_tests PRIVATE
+        PM_PROTOCOL_VECTORS="${PM_PROTOCOL_FIXTURE}")
+    add_test(NAME pm_protocol_tests COMMAND pm_protocol_tests)
 endif()

@@ -3,6 +3,18 @@
 # or trusted; the import table stays free of third-party DLLs.
 include(ExternalProject)
 
+# Explicit embedding/test reuse of a native static OpenSSL SDK. Default builds
+# still compile the pinned source below; no automatic system-library fallback.
+set(PM_OPENSSL_ROOT "" CACHE PATH "Explicit native static OpenSSL SDK")
+if(PM_OPENSSL_ROOT)
+    set(OPENSSL_ROOT_DIR "${PM_OPENSSL_ROOT}")
+    set(OPENSSL_USE_STATIC_LIBS TRUE)
+    find_package(OpenSSL 3.5 REQUIRED)
+    add_library(pm_openssl INTERFACE)
+    target_link_libraries(pm_openssl INTERFACE OpenSSL::SSL OpenSSL::Crypto)
+    return()
+endif()
+
 set(IZAN_OPENSSL_VERSION 3.5.0)
 set(IZAN_OPENSSL_PREFIX ${CMAKE_BINARY_DIR}/deps/openssl)
 set(IZAN_OPENSSL_INSTALL ${IZAN_OPENSSL_PREFIX}/install)
@@ -25,8 +37,11 @@ else()
     set(IZAN_OPENSSL_SYSLIBS "dl;pthread")
 endif()
 
+string(CONCAT PM_OPENSSL_ARCHIVE_URL
+    "https://github.com/openssl/openssl/releases/download/"
+    "openssl-${IZAN_OPENSSL_VERSION}/openssl-${IZAN_OPENSSL_VERSION}.tar.gz")
 ExternalProject_Add(openssl_ep
-    URL https://github.com/openssl/openssl/releases/download/openssl-${IZAN_OPENSSL_VERSION}/openssl-${IZAN_OPENSSL_VERSION}.tar.gz
+    URL ${PM_OPENSSL_ARCHIVE_URL}
     PREFIX ${IZAN_OPENSSL_PREFIX}
     DOWNLOAD_EXTRACT_TIMESTAMP ON
     BUILD_IN_SOURCE ON
