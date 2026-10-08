@@ -14,11 +14,21 @@
 #include <cstdint>
 #include <functional>
 #include <memory>
+#include <optional>
 #include <string>
 
 #include "net/ws_write_queue.hpp"
 
 namespace pm::net {
+
+// Bounded metadata only: never expose a peer's close reason or error body.
+struct WsFailure {
+    std::uint16_t close_code = 0;
+    unsigned http_status = 0;
+    std::string retry_after;
+    bool message_too_big = false;
+    bool tls_protocol_error = false;
+};
 
 // Asynchronous WSS client: one strand serialises everything, writes
 // go through a queue, reconnects back off exponentially. Create, set
@@ -29,6 +39,9 @@ public:
     using OpenHandler = std::function<void()>;
     using LogHandler = std::function<void(std::string_view)>;
     using StopHandler = std::function<void()>;
+    using FailurePolicy
+        = std::function<std::optional<std::chrono::milliseconds>(
+            const WsFailure&)>;
 
     WsClient(boost::asio::io_context& ioc, std::string host, std::string port,
         std::string target);
@@ -57,6 +70,19 @@ public:
     {
         keepalive_interval_ = interval;
         keepalive_text_ = std::move(text);
+    }
+
+    // Optional per-protocol policy, installed before start(). nullopt retires
+    // the client; a delay overrides backoff. Unconfigured clients retain the
+    // original reconnect behavior and Beast's original 16 MiB message limit.
+    void set_failure_policy(FailurePolicy policy)
+    {
+        failure_policy_ = std::move(policy);
+    }
+
+    void set_message_limit(std::size_t bytes)
+    {
+        message_limit_ = bytes;
     }
 
     void start();
@@ -90,9 +116,9 @@ private:
     void do_connect();
     void do_read(const std::shared_ptr<WsStream>& stream,
         const std::shared_ptr<ReadBuffer>& buffer, std::uint64_t generation);
-    void do_write(const std::shared_ptr<WsStream>& stream,
-        std::uint64_t generation);
-    void schedule_reconnect();
+    void do_write(
+        const std::shared_ptr<WsStream>& stream, std::uint64_t generation);
+    void schedule_reconnect(WsFailure failure = {});
     void schedule_keepalive();
     void fail(const boost::beast::error_code& ec, const char* what,
         std::uint64_t generation);
@@ -119,6 +145,9 @@ private:
     MessageHandler on_message_;
     OpenHandler on_open_;
     LogHandler on_log_;
+    FailurePolicy failure_policy_;
+    std::size_t message_limit_ = 16 * 1024 * 1024;
+    std::shared_ptr<boost::beast::websocket::response_type> handshake_response_;
 };
 
 }

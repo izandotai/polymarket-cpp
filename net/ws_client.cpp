@@ -66,6 +66,7 @@ void WsClient::stop(StopHandler completion)
             self->on_message_ = {};
             self->on_open_ = {};
             self->on_log_ = {};
+            self->failure_policy_ = {};
             if (completion)
                 completion();
         });
@@ -142,14 +143,45 @@ void WsClient::fail(
     connected_ = false;
     writing_ = false;
     write_queue_.discard_connection_writes(generation);
+    WsFailure failure;
+    // A peer can send a valid WS close and then omit TLS close_notify. Preserve
+    // the observed close code even when the final error is stream_truncated;
+    // otherwise an authentication/policy rejection becomes a retry loop.
+    if (ws_)
+        failure.close_code = static_cast<std::uint16_t>(ws_->reason().code);
+    failure.message_too_big = ec == websocket::error::message_too_big
+        || ec == websocket::error::buffer_overflow
+        || failure.close_code == websocket::close_code::too_big;
+    // SSL protocol failures (including application data after close_notify
+    // while Beast closes an oversized message) must remain distinct from a
+    // normal TCP loss or missing close_notify in asio.ssl.stream.
+    failure.tls_protocol_error = ec.category() == asio::error::get_ssl_category();
+    if (ec == websocket::error::upgrade_declined) {
+        failure.http_status = handshake_response_->result_int();
+        const auto header
+            = (*handshake_response_)[beast::http::field::retry_after];
+        // Oversized headers cannot silently shorten the server's minimum wait.
+        if (header.size() > 128)
+            failure.message_too_big = true;
+        else
+            failure.retry_after.assign(header.data(), header.size());
+    }
     ++generation_;
-    schedule_reconnect();
+    schedule_reconnect(std::move(failure));
 }
 
-void WsClient::schedule_reconnect()
+void WsClient::schedule_reconnect(WsFailure failure)
 {
     if (stopped_ || reconnect_scheduled_)
         return;
+    std::optional<std::chrono::milliseconds> policy_delay;
+    if (failure_policy_) {
+        policy_delay = failure_policy_(failure);
+        if (!policy_delay || policy_delay->count() < 0) {
+            stop();
+            return;
+        }
+    }
     reconnect_scheduled_ = true;
     connect_stage_timer_.cancel();
     keepalive_timer_.cancel();
@@ -163,7 +195,9 @@ void WsClient::schedule_reconnect()
     const auto jitter_window_ms = std::max(25, reconnect_delay_ms_ / 5);
     const auto jitter_ms = static_cast<int>(
         seed % static_cast<std::uint64_t>(jitter_window_ms + 1));
-    const auto delay_ms = std::min(30'000, reconnect_delay_ms_ + jitter_ms);
+    const auto delay_ms = policy_delay
+        ? policy_delay->count()
+        : std::min(30'000, reconnect_delay_ms_ + jitter_ms);
     log(std::format("ws {}{}: reconnecting in {} ms (base {} + jitter {})",
         host_, target_, delay_ms, reconnect_delay_ms_, jitter_ms));
     reconnect_timer_.expires_after(std::chrono::milliseconds(delay_ms));
@@ -186,7 +220,10 @@ void WsClient::do_connect()
     writing_ = false;
     const auto generation = ++generation_;
     const auto stream = std::make_shared<WsStream>(strand_, tls_context());
-    const auto buffer = std::make_shared<ReadBuffer>();
+    stream->read_message_max(message_limit_);
+    const auto buffer = std::make_shared<ReadBuffer>(message_limit_);
+    const auto response = std::make_shared<websocket::response_type>();
+    handshake_response_ = response;
     ws_ = stream;
 
     if (!SSL_set_tlsext_host_name(
@@ -223,7 +260,8 @@ void WsClient::do_connect()
         self->schedule_reconnect();
     });
     resolver->async_resolve(host_, port_,
-        [self = shared_from_this(), resolver, stream, buffer, generation](
+        [self = shared_from_this(), resolver, stream, buffer, response,
+            generation](
             const beast::error_code& ec, tcp::resolver::results_type results) {
             if (generation != self->generation_)
                 return;
@@ -232,7 +270,8 @@ void WsClient::do_connect()
             beast::get_lowest_layer(*stream).expires_after(
                 std::chrono::seconds(10));
             beast::get_lowest_layer(*stream).async_connect(results,
-                [self, stream, buffer, generation](const beast::error_code& ec2,
+                [self, stream, buffer, response, generation](
+                    const beast::error_code& ec2,
                     const tcp::resolver::results_type::endpoint_type&) {
                     if (generation != self->generation_)
                         return;
@@ -240,7 +279,7 @@ void WsClient::do_connect()
                         return self->fail(ec2, "connect", generation);
                     stream->next_layer().async_handshake(
                         asio::ssl::stream_base::client,
-                        [self, stream, buffer, generation](
+                        [self, stream, buffer, response, generation](
                             const beast::error_code& ec3) {
                             if (generation != self->generation_)
                                 return;
@@ -257,8 +296,9 @@ void WsClient::do_connect()
                                         req.set(beast::http::field::user_agent,
                                             "polymarket-cpp/0.1");
                                     }));
-                            stream->async_handshake(self->host_, self->target_,
-                                [self, stream, buffer, generation](
+                            stream->async_handshake(*response, self->host_,
+                                self->target_,
+                                [self, stream, buffer, response, generation](
                                     const beast::error_code& ec4) {
                                     if (generation != self->generation_)
                                         return;
@@ -274,6 +314,9 @@ void WsClient::do_connect()
                                             generation);
                                     if (self->on_open_)
                                         self->on_open_();
+                                    if (self->stopped_
+                                        || generation != self->generation_)
+                                        return;
                                     if (!self->write_queue_.empty()
                                         && !self->writing_)
                                         self->do_write(stream, generation);
@@ -325,7 +368,8 @@ void WsClient::do_read(const std::shared_ptr<WsStream>& stream,
                     static_cast<const char*>(data.data()), data.size()));
             }
             buffer->consume(buffer->size());
-            self->do_read(stream, buffer, generation);
+            if (!self->stopped_ && generation == self->generation_)
+                self->do_read(stream, buffer, generation);
         });
 }
 
