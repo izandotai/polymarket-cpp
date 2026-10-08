@@ -46,7 +46,9 @@ struct TransactionEnvelope {
 RelayerTransaction parse_transaction(const std::string& body)
 {
     TransactionEnvelope envelope;
-    if (glz::read_json(envelope, body))
+    // The official submit response also carries state and may add metadata.
+    // Keep identifiers typed, while accepting fields unrelated to receipt identity.
+    if (glz::read<glz::opts { .error_on_unknown_keys = false }>(envelope, body))
         throw std::runtime_error("relayer transaction response invalid");
     if (envelope.transactionID.empty() && envelope.transactionHash.empty())
         throw std::runtime_error("relayer transaction identifiers missing");

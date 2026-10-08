@@ -256,8 +256,7 @@ TEST_CASE("public REST client pins credential-free routes and response bytes")
             "clob:/time",
             "clob:/book?token_id=123",
             "clob:/fee-rate/123",
-            "clob:/clob-markets/"
-            "0x0123456789abcdef0123456789ABCDEF0123456789abcdef0123456789ABCDEF",
+            "clob:/clob-markets/0x0123456789abcdef0123456789ABCDEF0123456789abcdef0123456789ABCDEF",
             "gamma:/events/slug/btc-updown-5m-1784712300",
         });
 
@@ -822,6 +821,36 @@ TEST_CASE("relayer wallet Batch execution is testable without an external write"
         key, wallet, 9, 1234567890, calls, 1752900000);
     CHECK(requests == 1);
     CHECK(transaction.transaction_id == "batch-txn");
+}
+
+TEST_CASE("relayer submit accepts additive response fields but rejects malformed identifiers")
+{
+    const auto owner = pm::PrivKey::from_hex(kTestKey).address();
+    for (const auto& body : {
+             R"({"transactionID":"accepted","transactionHash":"0xabc","state":"STATE_NEW","metadata":{"extra":1}})",
+             R"({"transactionID":"accepted","transactionHash":"","state":"STATE_EXECUTED"})"}) {
+        pm::RelayerConfig config;
+        config.relayer_creds = {"test-key", pm::to_hex0x(owner)};
+        int requests = 0;
+        pm::RelayerClient client(config, [&](auto, const auto&, const auto&, const auto&) {
+            ++requests;
+            return pm::net::HttpResponse { .status = 200, .body = body };
+        });
+        CHECK(client.deploy_deposit_wallet(owner).transaction_id == "accepted");
+        CHECK(requests == 1);
+    }
+    for (const auto& body : { R"({"transactionID":42,"state":"STATE_NEW"})",
+             R"({"state":"STATE_NEW"})", R"({"transactionHash":null})" }) {
+        pm::RelayerConfig config;
+        config.relayer_creds = {"test-key", pm::to_hex0x(owner)};
+        int requests = 0;
+        pm::RelayerClient client(config, [&](auto, const auto&, const auto&, const auto&) {
+            ++requests;
+            return pm::net::HttpResponse { .status = 200, .body = body };
+        });
+        CHECK_THROWS(client.deploy_deposit_wallet(owner));
+        CHECK(requests == 1);
+    }
 }
 
 TEST_CASE("relayer writes fail closed without complete credentials")
