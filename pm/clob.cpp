@@ -257,7 +257,9 @@ PreparedOrder ClobClient::prepare_order(const PlaceOrderArgs& args)
     const bool market_buy = args.side == Side::Buy
         && (args.order_type == "FOK" || args.order_type == "FAK");
     const auto [maker_amt, taker_amt] = market_buy
-        ? market_buy_amounts(args.size, price)
+        ? (args.protect_market_buy_price
+                  ? protected_market_buy_amounts(args.size, args.price, tick)
+                  : market_buy_amounts(args.size, price))
         : order_amounts(args.side, args.size, price, tick);
 
     OrderV2 o;

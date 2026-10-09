@@ -132,6 +132,27 @@ namespace {
                 "pm: price must be finite and between zero and one");
     }
 
+    uint64_t power10(int places)
+    {
+        uint64_t value = 1;
+        while (places-- > 0)
+            value *= 10;
+        return value;
+    }
+
+    std::string divide_down(std::string_view numerator, uint64_t denominator)
+    {
+        std::string quotient;
+        uint64_t remainder = 0;
+        // Here the denominator is at most 1e6; remainder * 10 cannot overflow.
+        for (const char digit : numerator) {
+            remainder = remainder * 10 + uint64_t(digit - '0');
+            quotient += char('0' + remainder / denominator);
+            remainder %= denominator;
+        }
+        return quotient;
+    }
+
 }
 
 bool valid_tick_size(const std::string& tick)
@@ -180,6 +201,46 @@ std::pair<uint64_t, uint64_t> market_buy_amounts(double size, double price)
                      p.exponent },
             0, Rounding::Up);
     return { token_units(cents), tokens };
+}
+
+std::pair<uint64_t, uint64_t> protected_market_buy_amounts(
+    double size, double price, const std::string& tick)
+{
+    validate_price(price);
+    const auto& rc = config_for(tick);
+    const auto scale = power10(rc.price);
+    const auto increment
+        = scaled(decimal(std::stod(tick)), rc.price, Rounding::Down);
+    auto price_units = scaled(decimal(price), rc.price, Rounding::Down);
+    price_units -= price_units % increment;
+    if (price_units < increment || price_units > scale - increment)
+        throw std::invalid_argument(
+            "pm: protection price out of range for tick size");
+    const auto shares = scaled(decimal(size), 2, Rounding::Down);
+    const auto cents
+        = scaled({ U256::from_u64(shares).checked_mul_u64(price_units).to_dec(),
+                     -rc.price },
+            0, Rounding::Up);
+    const auto cash = token_units(cents);
+    const auto numerator
+        = U256::from_u64(cents).checked_mul_u64(scale).checked_mul_u64(
+            power10(rc.amount));
+    const auto tokens = scaled(
+        { divide_down(numerator.to_dec(), 100 * price_units), -rc.amount }, 6,
+        Rounding::Down);
+    if (cash == 0 || tokens == 0)
+        throw std::invalid_argument(
+            "pm: protected market BUY must have positive amounts");
+    // The reference builder floors derived token precision. Its signed ratio
+    // can be microscopically above the protection price, but must never reach
+    // the next tradable tick. Verify that property with integer arithmetic.
+    const auto signed_cash = U256::from_u64(cash).checked_mul_u64(scale);
+    if (signed_cash < U256::from_u64(tokens).checked_mul_u64(price_units)
+        || signed_cash
+            >= U256::from_u64(tokens).checked_mul_u64(price_units + increment))
+        throw std::invalid_argument(
+            "pm: protected market BUY tick bound failed");
+    return { cash, tokens };
 }
 
 }

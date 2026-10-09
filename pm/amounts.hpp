@@ -31,6 +31,14 @@ std::pair<uint64_t, uint64_t> order_amounts(
 // Fractional share counts from partial fills are rejected otherwise.
 std::pair<uint64_t, uint64_t> market_buy_amounts(double size, double price);
 
+// Share-target market BUY with the same cent-rounded cash cap, but a minimum
+// token amount derived from cash / protection price using the reference
+// builder's amount precision. Floors the protection to a full valid tick.
+// The signed ratio permits the protection tick and excludes the next higher
+// tick. Does not change the caller's strategy target or authorize any fill.
+std::pair<uint64_t, uint64_t> protected_market_buy_amounts(
+    double size, double price, const std::string& tick);
+
 // price snapped to the tick's price digits — what the signed order
 // actually promises.
 double snap_price(double price, const std::string& tick);

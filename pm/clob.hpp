@@ -38,9 +38,9 @@ struct ClobConfig {
 };
 
 struct PlaceOrderArgs {
-    std::string token_id;           // decimal string
+    std::string token_id; // decimal string
     Side side = Side::Buy;
-    double price = 0.0;             // 0..1, snapped to the market's tick size
+    double price = 0.0;   // 0..1, snapped to the market's tick size
     // Outcome shares for every TIF, including BUY FAK/FOK. This existing
     // SDK entry is not the unified SDK's separate cash-budget market order.
     double size = 0.0;
@@ -55,6 +55,9 @@ struct PlaceOrderArgs {
     // Select from verified Gamma market.version, never the current market when
     // selling a retained lot. Existing callers keep their original CTF route.
     OrderProtocol protocol = OrderProtocol::ctf_v2;
+    // Opt-in price protection for the existing share-target BUY FAK/FOK API.
+    // Keeps its cent-rounded cash cap; derives signed minimum tokens from it.
+    bool protect_market_buy_price = false;
 };
 
 struct PreparedOrder {

@@ -73,6 +73,29 @@ pm::OrderV2 golden_order()
 
 }
 
+TEST_CASE("protected market BUY signs a cash-derived minimum and excludes the "
+          "next tick")
+{
+    CHECK(pm::protected_market_buy_amounts(3.01, .4, "0.001")
+        == std::pair<uint64_t, uint64_t>(1210000, 3025000));
+    CHECK(pm::protected_market_buy_amounts(1.13, .5, "0.01")
+        == std::pair<uint64_t, uint64_t>(570000, 1140000));
+    CHECK(pm::protected_market_buy_amounts(1, .523, "0.005")
+        == std::pair<uint64_t, uint64_t>(520000, 1000000));
+    CHECK(pm::protected_market_buy_amounts(1, .523, "0.0025")
+        == std::pair<uint64_t, uint64_t>(530000, 1014354));
+    CHECK_THROWS_AS(pm::protected_market_buy_amounts(.009, .4, "0.01"),
+        std::invalid_argument);
+    CHECK_THROWS_AS(pm::protected_market_buy_amounts(1, .099, "0.1"),
+        std::invalid_argument);
+    CHECK_THROWS_AS(
+        pm::protected_market_buy_amounts(1, .4, "0.02"), std::invalid_argument);
+    CHECK_THROWS_AS(pm::protected_market_buy_amounts(1e14, .5, "0.01"),
+        std::overflow_error);
+    CHECK(pm::market_buy_amounts(3.01, .4)
+        == std::pair<uint64_t, uint64_t>(1210000, 3010000));
+}
+
 TEST_CASE("market websocket protocol stays byte-for-byte compatible")
 {
     const std::vector<std::string> initial { "1", "2" };
