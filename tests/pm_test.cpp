@@ -14,7 +14,9 @@
 #include <string>
 
 #include <atomic>
+#include <cmath>
 #include <cstdlib>
+#include <limits>
 #include <thread>
 
 #include "pm/amounts.hpp"
@@ -995,6 +997,43 @@ TEST_CASE("amount arithmetic mirrors the reference builder")
     CHECK(pm::valid_tick_size("0.001"));
     CHECK(!pm::valid_tick_size("0.02"));
     CHECK_THROWS(pm::order_amounts(Side::Buy, 1, 0.5, "0.02"));
+}
+
+TEST_CASE("amount boundaries use decimal money without an epsilon")
+{
+    using pm::Side;
+    CHECK(pm::market_buy_amounts(3, .4) == std::pair<uint64_t, uint64_t>(1200000, 3000000));
+    CHECK(pm::market_buy_amounts(1.13, .5) == std::pair<uint64_t, uint64_t>(570000, 1130000));
+    CHECK(pm::market_buy_amounts(.29, 1) == std::pair<uint64_t, uint64_t>(290000, 290000));
+    CHECK(pm::market_buy_amounts(std::nextafter(3., 0.), .4)
+        == std::pair<uint64_t, uint64_t>(1200000, 2990000));
+    CHECK(pm::market_buy_amounts(3, std::nextafter(.4, 1.))
+        == std::pair<uint64_t, uint64_t>(1210000, 3000000));
+    CHECK(pm::market_buy_amounts(3, std::nextafter(.4, 0.))
+        == std::pair<uint64_t, uint64_t>(1200000, 3000000));
+    CHECK(pm::market_buy_amounts(3.01, .4) == std::pair<uint64_t, uint64_t>(1210000, 3010000));
+    CHECK(pm::market_buy_amounts(1, std::numeric_limits<double>::denorm_min())
+        == std::pair<uint64_t, uint64_t>(10000, 1000000));
+    CHECK(pm::market_buy_amounts(1e-10, .4) == std::pair<uint64_t, uint64_t>(0, 0));
+    for (const auto* tick : { "0.1", "0.01", "0.005", "0.0025", "0.001", "0.0001" }) {
+        CHECK(pm::order_amounts(Side::Buy, 1.13, .5, tick)
+            == std::pair<uint64_t, uint64_t>(565000, 1130000));
+        CHECK(pm::order_amounts(Side::Sell, 1.13, .5, tick)
+            == std::pair<uint64_t, uint64_t>(1130000, 565000));
+    }
+    CHECK(pm::snap_price(.145, "0.01") == .15);
+    CHECK(pm::snap_price(std::nextafter(.145, 0.), "0.01") == .14);
+    CHECK_THROWS_AS(pm::market_buy_amounts(1e14, .5), std::overflow_error);
+    CHECK_THROWS_AS(pm::order_amounts(Side::Buy, 1e14, .5, "0.01"), std::overflow_error);
+    for (const double invalid : { -1., std::numeric_limits<double>::infinity(),
+             std::numeric_limits<double>::quiet_NaN() }) {
+        CHECK_THROWS_AS(pm::market_buy_amounts(invalid, .5), std::invalid_argument);
+        CHECK_THROWS_AS(pm::market_buy_amounts(1, invalid), std::invalid_argument);
+        CHECK_THROWS_AS(pm::order_amounts(Side::Sell, invalid, .5, "0.01"), std::invalid_argument);
+        CHECK_THROWS_AS(pm::snap_price(invalid, "0.01"), std::invalid_argument);
+    }
+    CHECK_THROWS_AS(pm::market_buy_amounts(1, 1.01), std::invalid_argument);
+    CHECK_THROWS_AS(pm::order_amounts(static_cast<Side>(2), 1, .5, "0.01"), std::invalid_argument);
 }
 
 TEST_CASE("L1 headers carry the attestation the venue expects")

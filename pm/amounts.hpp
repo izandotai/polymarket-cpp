@@ -11,6 +11,9 @@ namespace pm {
 // The venue's amount arithmetic, mirrored from the reference builder.
 // Everything returns {maker_amount, taker_amount} in 1e6 integer
 // units — the numbers that go into the signed order.
+// Doubles are interpreted as their shortest round-trip decimal strings.
+// Rounding and products are exact decimal/integer operations; nonfinite,
+// negative or overflowing amounts throw instead of producing signed garbage.
 
 // True iff the tick size is one the rounding table knows.
 bool valid_tick_size(const std::string& tick);

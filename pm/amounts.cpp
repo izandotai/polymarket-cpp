@@ -1,7 +1,8 @@
 #include "pm/amounts.hpp"
 
+#include <charconv>
 #include <cmath>
-#include <cstdio>
+#include <limits>
 #include <map>
 #include <stdexcept>
 
@@ -36,39 +37,99 @@ namespace {
         return it->second;
     }
 
-    double round_down(double x, int digits)
+    struct Decimal {
+        std::string digits;
+        int exponent = 0;
+    };
+
+    enum class Rounding { Down, Up, Nearest };
+
+    Decimal decimal(double value)
     {
-        const double p = std::pow(10.0, digits);
-        return std::floor(x * p) / p;
+        if (!std::isfinite(value) || value < 0)
+            throw std::invalid_argument(
+                "pm: amount must be finite and nonnegative");
+        if (value == 0)
+            return { "0", 0 };
+        // The public API accepts doubles. Use their shortest round-trip
+        // decimal, not the binary product or a fixed epsilon that erases real
+        // boundaries.
+        char buffer[32];
+        const auto result
+            = std::to_chars(buffer, buffer + sizeof buffer, value);
+        if (result.ec != std::errc {})
+            throw std::invalid_argument("pm: amount conversion failed");
+        const std::string_view text(buffer, result.ptr);
+        Decimal out;
+        bool fraction = false;
+        for (std::size_t i = 0; i < text.size(); ++i) {
+            if (text[i] == 'e' || text[i] == 'E') {
+                auto start = text.data() + i + 1;
+                if (*start == '+')
+                    ++start;
+                int exponent = 0;
+                const auto parsed = std::from_chars(
+                    start, text.data() + text.size(), exponent);
+                if (parsed.ec != std::errc {}
+                    || parsed.ptr != text.data() + text.size())
+                    throw std::invalid_argument(
+                        "pm: amount exponent conversion failed");
+                out.exponent += exponent;
+                break;
+            }
+            if (text[i] == '.') {
+                fraction = true;
+                continue;
+            }
+            out.digits += text[i];
+            if (fraction)
+                --out.exponent;
+        }
+        return out;
     }
 
-    double round_up(double x, int digits)
+    uint64_t scaled(Decimal value, int places, Rounding rounding)
     {
-        const double p = std::pow(10.0, digits);
-        return std::ceil(x * p) / p;
-    }
-
-    double round_normal(double x, int digits)
-    {
-        const double p = std::pow(10.0, digits);
-        return std::round(x * p) / p;
-    }
-
-    int decimal_places(double x)
-    {
-        char buf[64];
-        std::snprintf(buf, sizeof buf, "%.10f", x);
-        const std::string s(buf);
-        const auto dot = s.find('.');
-        const auto last = s.find_last_not_of('0');
-        if (last <= dot)
+        const auto first = value.digits.find_first_not_of('0');
+        if (first == std::string::npos)
             return 0;
-        return int(last - dot);
+        value.digits.erase(0, first);
+        const int shift = value.exponent + places;
+        bool increment = false;
+        if (shift >= 0) {
+            if (value.digits.size() + std::size_t(shift) > 20)
+                throw std::overflow_error("pm: token amount overflow");
+            value.digits.append(std::size_t(shift), '0');
+        } else {
+            const int retained = int(value.digits.size()) + shift;
+            const std::size_t cut = std::size_t(std::max(0, retained));
+            increment = rounding == Rounding::Up
+                ? value.digits.find_first_not_of('0', cut) != std::string::npos
+                : rounding == Rounding::Nearest && retained >= 0
+                    && value.digits[cut] >= '5';
+            value.digits = cut ? value.digits.substr(0, cut) : "0";
+        }
+        uint64_t units = 0;
+        const auto parsed = std::from_chars(value.digits.data(),
+            value.digits.data() + value.digits.size(), units);
+        if (parsed.ec != std::errc {}
+            || (increment && units == std::numeric_limits<uint64_t>::max()))
+            throw std::overflow_error("pm: token amount overflow");
+        return units + uint64_t(increment);
     }
 
-    uint64_t to_token_decimals(double x)
+    uint64_t token_units(uint64_t hundredths)
     {
-        return uint64_t(std::llround(x * 1e6));
+        if (hundredths > std::numeric_limits<uint64_t>::max() / 10000)
+            throw std::overflow_error("pm: token amount overflow");
+        return hundredths * 10000;
+    }
+
+    void validate_price(double price)
+    {
+        if (!std::isfinite(price) || price < 0 || price > 1)
+            throw std::invalid_argument(
+                "pm: price must be finite and between zero and one");
     }
 
 }
@@ -80,39 +141,45 @@ bool valid_tick_size(const std::string& tick)
 
 double snap_price(double price, const std::string& tick)
 {
-    return round_normal(price, config_for(tick).price);
+    validate_price(price);
+    const int places = config_for(tick).price;
+    return double(scaled(decimal(price), places, Rounding::Nearest))
+        / std::pow(10.0, places);
 }
 
 std::pair<uint64_t, uint64_t> order_amounts(
     Side side, double size, double price, const std::string& tick)
 {
     const RoundConfig& rc = config_for(tick);
-    const double raw_price = round_normal(price, rc.price);
-    if (side == Side::Buy) {
-        const double raw_taker = round_down(size, rc.size);
-        double raw_maker = raw_taker * raw_price;
-        if (decimal_places(raw_maker) > rc.amount) {
-            raw_maker = round_up(raw_maker, rc.amount + 4);
-            if (decimal_places(raw_maker) > rc.amount)
-                raw_maker = round_down(raw_maker, rc.amount);
-        }
-        return { to_token_decimals(raw_maker), to_token_decimals(raw_taker) };
-    }
-    const double raw_maker = round_down(size, rc.size);
-    double raw_taker = raw_maker * raw_price;
-    if (decimal_places(raw_taker) > rc.amount) {
-        raw_taker = round_up(raw_taker, rc.amount + 4);
-        if (decimal_places(raw_taker) > rc.amount)
-            raw_taker = round_down(raw_taker, rc.amount);
-    }
-    return { to_token_decimals(raw_maker), to_token_decimals(raw_taker) };
+    validate_price(price);
+    if (side != Side::Buy && side != Side::Sell)
+        throw std::invalid_argument("pm: invalid order side");
+    const auto shares = scaled(decimal(size), rc.size, Rounding::Down);
+    const auto price_units
+        = scaled(decimal(price), rc.price, Rounding::Nearest);
+    // Every supported table has amount == size + price (at most six).
+    // The exact product therefore already satisfies the amount digit budget.
+    const auto cash
+        = scaled({ U256::from_u64(shares).checked_mul_u64(price_units).to_dec(),
+                     -rc.amount },
+            6, Rounding::Down);
+    const auto tokens = token_units(shares);
+    return side == Side::Buy ? std::pair(cash, tokens)
+                             : std::pair(tokens, cash);
 }
 
 std::pair<uint64_t, uint64_t> market_buy_amounts(double size, double price)
 {
-    const double taker = round_down(size, 2);
-    const double maker = round_up(taker * price, 2);
-    return { to_token_decimals(maker), to_token_decimals(taker) };
+    validate_price(price);
+    const auto shares = scaled(decimal(size), 2, Rounding::Down);
+    const auto tokens = token_units(shares);
+    const auto p = decimal(price);
+    const auto coefficient = scaled({ p.digits, 0 }, 0, Rounding::Down);
+    const auto cents
+        = scaled({ U256::from_u64(shares).checked_mul_u64(coefficient).to_dec(),
+                     p.exponent },
+            0, Rounding::Up);
+    return { token_units(cents), tokens };
 }
 
 }
