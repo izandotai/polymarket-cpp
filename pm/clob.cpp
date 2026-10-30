@@ -262,6 +262,10 @@ PreparedOrder ClobClient::prepare_order(const PlaceOrderArgs& args)
                   : market_buy_amounts(args.size, price))
         : order_amounts(args.side, args.size, price, tick);
 
+    if (market_buy && args.protect_market_buy_price)
+        validate_protected_market_buy_price(
+            maker_amt, taker_amt, args.price, tick);
+
     OrderV2 o;
     o.salt = generate_salt();
     o.maker = funder_addr_;

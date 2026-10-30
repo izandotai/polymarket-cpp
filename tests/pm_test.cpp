@@ -96,6 +96,50 @@ TEST_CASE("protected market BUY signs a cash-derived minimum and excludes the "
         == std::pair<uint64_t, uint64_t>(1210000, 3010000));
 }
 
+TEST_CASE("protected BUY final ratio excludes the finest tick without changing history")
+{
+    // Keep original cash-derived amounts readable for historical order identity.
+    const auto historical = pm::protected_market_buy_amounts(5.07, .9, "0.1");
+    CHECK(historical == std::pair<uint64_t, uint64_t>(4570000, 5077000));
+    CHECK_THROWS_AS(pm::validate_protected_market_buy_price(
+        historical.first, historical.second, .9, "0.1"), std::invalid_argument);
+    CHECK_NOTHROW(pm::validate_protected_market_buy_price(700099, 1000000, .7, "0.1"));
+    CHECK_THROWS_AS(pm::validate_protected_market_buy_price(700100, 1000000, .7, "0.1"), std::invalid_argument);
+    CHECK_THROWS_AS(pm::validate_protected_market_buy_price(700101, 1000000, .7, "0.1"), std::invalid_argument);
+    CHECK_THROWS_AS(pm::validate_protected_market_buy_price(1, 0, .7, "0.1"), std::invalid_argument);
+    CHECK_THROWS_AS(pm::validate_protected_market_buy_price(0, 1, .7, "0.1"), std::invalid_argument);
+    CHECK_NOTHROW(pm::validate_protected_market_buy_price(
+        std::numeric_limits<uint64_t>::max() / 2, std::numeric_limits<uint64_t>::max(), .7, "0.1"));
+
+    // Explicit metadata: preparation is local and must not need auth/REST/WS.
+    pm::ClobConfig cfg;
+    cfg.private_key_hex = kTestKey;
+    cfg.rest_host = "offline.invalid";
+    cfg.creds = { "offline-key", "c2VjcmV0", "offline-passphrase" };
+    pm::ClobClient client(cfg);
+    for (const auto protocol : {pm::OrderProtocol::ctf_v2, pm::OrderProtocol::position_v3}) {
+        pm::PlaceOrderArgs args;
+        args.token_id = protocol == pm::OrderProtocol::ctf_v2 ? "1"
+            : "452312848583266388373324160190187140051835877600158453279131187530910662656";
+        args.protocol = protocol;
+        args.size = 5.07; args.price = .9; args.tick_size = "0.1"; args.neg_risk = false;
+        args.protect_market_buy_price = true;
+        for (const auto* tif : {"FAK", "FOK"}) {
+            args.order_type = tif;
+            CHECK_THROWS_WITH_AS(client.prepare_order(args),
+                "pm: protected market BUY exceeds finest tick price bound", std::invalid_argument);
+        }
+        args.order_type = "FAK"; args.size = 5.01;
+        CHECK_NOTHROW(client.prepare_order(args));
+        args.size = 5.07; args.protect_market_buy_price = false;
+        CHECK_NOTHROW(client.prepare_order(args));
+        args.protect_market_buy_price = true; args.order_type = "GTC";
+        CHECK_NOTHROW(client.prepare_order(args));
+        args.side = pm::Side::Sell; args.order_type = "FAK";
+        CHECK_NOTHROW(client.prepare_order(args));
+    }
+}
+
 TEST_CASE("market websocket protocol stays byte-for-byte compatible")
 {
     const std::vector<std::string> initial { "1", "2" };

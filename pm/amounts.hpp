@@ -39,6 +39,13 @@ std::pair<uint64_t, uint64_t> market_buy_amounts(double size, double price);
 std::pair<uint64_t, uint64_t> protected_market_buy_amounts(
     double size, double price, const std::string& tick);
 
+// Final pre-signing check: the encoded BUY ratio must stay strictly below
+// protection + 0.0001 even if a cached tick becomes finer. Amount derivation
+// above remains available unchanged for recognizing previously signed orders;
+// this check neither refreshes metadata nor changes cash, shares or fees.
+void validate_protected_market_buy_price(uint64_t cash, uint64_t tokens,
+    double price, const std::string& tick);
+
 // price snapped to the tick's price digits — what the signed order
 // actually promises.
 double snap_price(double price, const std::string& tick);

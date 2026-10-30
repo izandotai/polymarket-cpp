@@ -243,4 +243,28 @@ std::pair<uint64_t, uint64_t> protected_market_buy_amounts(
     return { cash, tokens };
 }
 
+void validate_protected_market_buy_price(uint64_t cash, uint64_t tokens,
+    double price, const std::string& tick)
+{
+    validate_price(price);
+    const auto& rc = config_for(tick);
+    const auto scale = power10(rc.price);
+    const auto increment
+        = scaled(decimal(std::stod(tick)), rc.price, Rounding::Down);
+    auto protection = scaled(decimal(price), rc.price, Rounding::Down);
+    protection -= protection % increment;
+    if (protection < increment || protection > scale - increment
+        || cash == 0 || tokens == 0)
+        throw std::invalid_argument("pm: invalid protected market BUY amounts");
+    // 0.0001 is the finest supported tick. Use the final integer amounts,
+    // including any caller adjustment, rather than a floating-point quotient
+    // or the next tick from possibly stale metadata. Equality is unsafe.
+    constexpr uint64_t finest_scale = 10000;
+    const auto next = protection * (finest_scale / scale) + 1;
+    if (U256::from_u64(cash).checked_mul_u64(finest_scale)
+        >= U256::from_u64(tokens).checked_mul_u64(next))
+        throw std::invalid_argument(
+            "pm: protected market BUY exceeds finest tick price bound");
+}
+
 }
