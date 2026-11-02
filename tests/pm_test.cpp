@@ -1416,3 +1416,28 @@ TEST_CASE("live: the real-time data socket streams binance prices")
     io.join();
     CHECK(got.load() > 0);
 }
+
+
+TEST_CASE("heartbeat mismatch hints are bounded and never imply acceptance")
+{
+    const std::string body = R"({"error_msg":"Invalid Heartbeat ID","heartbeat_id":"server-id"})";
+    const auto hint = pm::heartbeat_mismatch_id({400, body, {}});
+    REQUIRE(hint); CHECK(*hint == "server-id");
+    const auto empty = pm::heartbeat_mismatch_id({400, R"({"error_msg":"Invalid Heartbeat ID","heartbeat_id":""})", {}});
+    REQUIRE(empty); CHECK(empty->empty());
+    CHECK(pm::heartbeat_mismatch_id({400, R"({"error_msg":"Invalid Heartbeat ID","heartbeat_id":"server-id","extra":42})", {}}));
+    for (int status : {0,200,201,401,403,404,429,500,503})
+        CHECK_FALSE(pm::heartbeat_mismatch_id({status,body,{}}));
+    for (const std::string invalid : {"", "null", "[]", "not JSON",
+        R"({"error_msg":"Invalid Heartbeat ID"})",
+        R"({"error_msg":"Invalid Heartbeat ID","heartbeat_id":null})",
+        R"({"error_msg":"Invalid Heartbeat ID","heartbeat_id":42})",
+        R"({"error_msg":"another error","heartbeat_id":"server-id"})",
+        R"({"error_msg":"Invalid Heartbeat ID","heartbeat_id":"bad id"})"})
+        CHECK_FALSE(pm::heartbeat_mismatch_id({400,invalid,{}}));
+    CHECK_FALSE(pm::heartbeat_mismatch_id({400,std::string(4097,'x'),{}}));
+    CHECK_FALSE(pm::heartbeat_mismatch_id({400,"{\"error_msg\":\"Invalid Heartbeat ID\",\"heartbeat_id\":\""+std::string(129,'x')+"\"}",{}}));
+    const pm::HeartbeatIdMismatchError error(body,"server-id");
+    CHECK(error.expected_id()=="server-id");
+    CHECK(std::string(error.what())=="pm heartbeat 400: "+body);
+}

@@ -100,3 +100,12 @@ Native maintenance also incorporates the terminal integration's bounded shared H
 The maintained terminal migrates its independent Chainlink observer to `wss://ws-live-v2.polymarket.com/ws`, using existing L2 credentials, explicit USD/provider pins and authenticated acknowledgement/snapshot/sequence checks. The SDK's legacy `Rtds` wrapper remains for legacy/activity consumers; its price helpers are **not** an authenticated PolyBolt implementation or a fallback for a retired price service. Migration requires the new protocol and decimal format, not replacing that wrapper's hostname. See the [official PolyBolt migration](https://docs.polymarket.com/migrate/rtds-to-polybolt) and [machine-readable contract](https://ws-live-v2.polymarket.com/asyncapi.json).
 
 References: [Protocol API migration](https://docs.polymarket.com/migrate/polymarket-v2/api-integrations), [contract migration](https://docs.polymarket.com/migrate/polymarket-v2/contract-integrations), [Data API migration](https://docs.polymarket.com/migrate/data-api-v1-to-v2). Verification covers the original native suite, 120 independent signing vectors across both protocols and wallet types, query boundaries/public-error passthrough, and 64 actual prepared-order combinations without network writes. See [oracle provenance](tests/fixtures/README.md). This is not a claim of application or real-money end-to-end readiness.
+
+
+`ClobClient::post_heartbeat` sends one SDK request (retaining the existing
+transport retry policy). A valid documented HTTP400 ID mismatch throws
+`HeartbeatIdMismatchError`, derived from `std::runtime_error`; `expected_id()`
+retains the server hint, including an explicitly empty ID. It is not an
+acknowledgement. Callers serialize sends and choose their own bounded retry;
+the SDK does not add a mismatch retry or a timer. Other errors retain the
+existing error path. See the official [heartbeat contract](https://docs.polymarket.com/trading/manage-orders#order-heartbeats).

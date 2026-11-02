@@ -2,6 +2,8 @@
 
 #include <cstdint>
 #include <optional>
+#include <stdexcept>
+#include <utility>
 #include <string>
 #include <string_view>
 
@@ -17,6 +19,21 @@ inline constexpr std::string_view kHeartbeatPath = "/v1/heartbeats";
 
 // Exact compact JSON signed and sent by py-clob-client-v2.
 std::string build_heartbeat_request(std::string_view heartbeat_id = {});
+
+// A documented HTTP400 expected-ID hint, including an explicitly empty ID.
+// Decoding has no network effects; callers own scheduling and retry limits.
+std::optional<std::string> heartbeat_mismatch_id(const net::HttpResponse& response);
+
+class HeartbeatIdMismatchError final : public std::runtime_error {
+public:
+    HeartbeatIdMismatchError(std::string body, std::string expected_id)
+        : std::runtime_error("pm heartbeat 400: " + body)
+        , expected_id_(std::move(expected_id)) {}
+    const std::string& expected_id() const noexcept { return expected_id_; }
+private:
+    std::string expected_id_;
+};
+
 
 // Everything the client needs to talk to the venue. Hosts default to
 // production; credentials may be supplied up front or derived lazily

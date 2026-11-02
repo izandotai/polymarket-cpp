@@ -1,6 +1,7 @@
 #include "pm/clob.hpp"
 #include "pm/protocol.hpp"
 
+#include <algorithm>
 #include <chrono>
 #include <cmath>
 #include <stdexcept>
@@ -57,6 +58,11 @@ namespace {
         std::string heartbeat_id;
     };
 
+    struct HeartbeatMismatchWire {
+        std::optional<std::string> error_msg;
+        std::optional<std::string> heartbeat_id;
+    };
+
     // salt = random() * now_ms, the reference client's distribution.
     uint64_t generate_salt()
     {
@@ -96,6 +102,23 @@ namespace {
         return out;
     }
 
+}
+
+std::optional<std::string> heartbeat_mismatch_id(const net::HttpResponse& response)
+{
+    if (response.status != 400 || response.body.empty() || response.body.size() > 4096)
+        return std::nullopt;
+    HeartbeatMismatchWire wire;
+    if (glz::read<glz::opts { .error_on_unknown_keys = false }>(wire, response.body)
+        || !wire.error_msg || *wire.error_msg != "Invalid Heartbeat ID"
+        || !wire.heartbeat_id || wire.heartbeat_id->size() > 128)
+        return std::nullopt;
+    if (!std::all_of(wire.heartbeat_id->begin(), wire.heartbeat_id->end(), [](unsigned char c) {
+            return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'z')
+                || (c >= 'A' && c <= 'Z') || c == '-' || c == '_' || c == ':' || c == '.';
+        }))
+        return std::nullopt;
+    return std::move(*wire.heartbeat_id);
 }
 
 std::string build_heartbeat_request(std::string_view heartbeat_id)
@@ -362,8 +385,10 @@ std::string ClobClient::post_heartbeat(const std::string& heartbeat_id)
 {
     const std::string body = build_heartbeat_request(heartbeat_id);
     const std::string path(kHeartbeatPath);
-    return require_200(
-        http_.post(path, body, l2_now("POST", path, body)), "heartbeat");
+    auto response = http_.post(path, body, l2_now("POST", path, body));
+    if (auto expected_id = heartbeat_mismatch_id(response))
+        throw HeartbeatIdMismatchError(response.body, std::move(*expected_id));
+    return require_200(std::move(response), "heartbeat");
 }
 
 std::string ClobClient::get_open_orders()
