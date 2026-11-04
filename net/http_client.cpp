@@ -301,6 +301,17 @@ HttpResponse HttpsClient::do_request(http::verb method,
     auto [read_error, read] = wait_for_transfer([&](auto handler) {
         http::async_read(*m_stream, buffer, parser, std::move(handler));
     });
+    if (read_error == http::error::body_limit) {
+        Headers response_headers;
+        for (const auto& field : parser.get().base()) {
+            response_headers.emplace_back(
+                std::string(field.name_string()), std::string(field.value()));
+        }
+        throw HttpBodyLimitError(
+            TransferFailure("read", read_error, read).what(),
+            int(parser.get().result_int()), std::move(response_headers),
+            m_options.body_limit);
+    }
     if (read_error)
         throw TransferFailure("read", read_error, read);
     auto res = parser.release();

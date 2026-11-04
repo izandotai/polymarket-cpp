@@ -109,3 +109,11 @@ retains the server hint, including an explicitly empty ID. It is not an
 acknowledgement. Callers serialize sends and choose their own bounded retry;
 the SDK does not add a mismatch retry or a timer. Other errors retain the
 existing error path. See the official [heartbeat contract](https://docs.polymarket.com/trading/manage-orders#order-heartbeats).
+### Oversized HTTP responses
+
+`HttpsClient` keeps its configured header/body limits. A body-limit failure
+throws `pm::net::HttpBodyLimitError` with the HTTP status, bounded headers and
+configured limit; `response().body` is always empty. Endpoint owners can use
+this metadata to honor denial/cooldown headers without accepting a partial
+JSON body. Other transport failures and the existing GET/retry and
+`post_once` no-resend policies are unchanged.

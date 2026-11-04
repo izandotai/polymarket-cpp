@@ -8,6 +8,7 @@
 #include <chrono>
 #include <cstddef>
 #include <memory>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -23,6 +24,27 @@ struct HttpResponse {
     Headers headers;
 
     std::string_view header(std::string_view name) const noexcept;
+};
+
+// A response that exceeds the configured body bound is still a failure. Keep
+// only its bounded status/headers so endpoint owners can honor Retry-After;
+// no partial body is returned or treated as a successful response.
+class HttpBodyLimitError : public std::runtime_error {
+public:
+    HttpBodyLimitError(std::string message, int status, Headers headers,
+        std::size_t limit)
+        : std::runtime_error(std::move(message))
+        , m_response { status, {}, std::move(headers) }
+        , m_limit(limit)
+    {
+    }
+
+    const HttpResponse& response() const noexcept { return m_response; }
+    std::size_t limit() const noexcept { return m_limit; }
+
+private:
+    HttpResponse m_response;
+    std::size_t m_limit;
 };
 
 struct HttpsClientOptions {
