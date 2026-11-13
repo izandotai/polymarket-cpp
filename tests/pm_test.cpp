@@ -423,6 +423,78 @@ TEST_CASE("account REST targets match py-clob-client-v2 request encoding")
         std::invalid_argument);
 }
 
+TEST_CASE("open orders asset filters require their explicit market")
+{
+    const std::string order_id = "0x" + std::string(64, 'a');
+    for (const auto* asset : { "0", "100", "12345678901234567890" }) {
+        for (const auto& id : { std::string {}, order_id }) {
+            for (const auto* cursor : { "MA==", "AA+/==", "next_page-1" }) {
+                CHECK_THROWS_WITH_AS(
+                    pm::account_rest_protocol::open_orders_target(
+                        { .asset_id = asset, .id = id }, cursor),
+                    "pm: open-orders asset_id requires market",
+                    std::invalid_argument);
+                for (const auto digits : { 62, 64 }) {
+                    const auto market = "0x" + std::string(digits, 'b');
+                    const auto expected_cursor = std::string(cursor) == "MA=="
+                        ? "MA%3D%3D"
+                        : std::string(cursor) == "AA+/=="
+                        ? "AA%2B%2F%3D%3D" : "next_page-1";
+                    CHECK(pm::account_rest_protocol::open_orders_target(
+                              { .market = market, .asset_id = asset, .id = id },
+                              cursor)
+                        == "/data/orders?market=" + market + "&asset_id=" + asset
+                            + (id.empty() ? "" : "&id=" + id)
+                            + "&next_cursor=" + expected_cursor);
+                }
+            }
+        }
+    }
+    CHECK(pm::account_rest_protocol::open_orders_target()
+        == "/data/orders?next_cursor=MA%3D%3D");
+    CHECK(pm::account_rest_protocol::open_orders_target({ .id = order_id })
+        == "/data/orders?id=" + order_id + "&next_cursor=MA%3D%3D");
+    // The announced requirement is specific to /data/orders. Trade filtering
+    // must not silently inherit a new market requirement.
+    CHECK(pm::account_rest_protocol::trades_target({ .asset_id = "100" })
+        == "/data/trades?asset_id=100&next_cursor=MA%3D%3D");
+}
+
+TEST_CASE("invalid open order asset scope stops before authentication and IO")
+{
+    int clock_calls = 0;
+    int clob_calls = 0;
+    int data_calls = 0;
+    pm::AccountRestClient client(
+        { .creds = { .api_key = "test-api-key", .secret = "c2VjcmV0",
+              .passphrase = "test-passphrase" },
+            .signer_address = pm::eth_address_from_hex(kTestAddr),
+            .unix_seconds = [&] {
+                ++clock_calls;
+                return std::uint64_t { 1752900000 };
+            } },
+        [&](const std::string&, const pm::Headers&) {
+            ++clob_calls;
+            return pm::net::HttpResponse { 401, "unchanged server response" };
+        },
+        [&](const std::string&) {
+            ++data_calls;
+            return pm::net::HttpResponse { 503, "unused data API" };
+        });
+    CHECK_THROWS_WITH_AS(client.get_open_orders_page({ .asset_id = "100" }),
+        "pm: open-orders asset_id requires market", std::invalid_argument);
+    CHECK(clock_calls == 0);
+    CHECK(clob_calls == 0);
+    CHECK(data_calls == 0);
+    const auto response = client.get_open_orders_page(
+        { .market = "0x" + std::string(64, 'b'), .asset_id = "100" });
+    CHECK(response.status == 401);
+    CHECK(response.body == "unchanged server response");
+    CHECK(clock_calls == 1);
+    CHECK(clob_calls == 1);
+    CHECK(data_calls == 0);
+}
+
 TEST_CASE("account REST signs endpoint paths and preserves response bytes")
 {
     const pm::ApiCreds creds {

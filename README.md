@@ -93,6 +93,16 @@ Amount helpers interpret each double as its shortest round-trip decimal and perf
 
 `AccountRestClient::get_positions_v2_page` constructs the public `/v2/positions` request, at most twenty distinct conditions per cohort. The caller still owns complete cursor exhaustion, duplicate/scope validation and failure handling. CLOSED queries cannot include archived positions. Never treat an incomplete or failed read as zero holdings. Legacy offset helpers remain source-compatible during application migration; they are not a fallback for the retiring service.
 
+`AccountRestClient::get_open_orders_page` uses `/data/orders`. A nonempty
+`AccountOpenOrderParams::asset_id` requires an explicitly supplied `market`;
+the target builder throws `std::invalid_argument` before authentication or
+HTTP when it is missing. It never discovers a market or removes the asset
+filter. Unfiltered, market-only and order-ID-only requests retain their
+existing targets, cursor encoding and endpoint-path authentication. The
+requirement does not apply to this SDK's separate `/data/trades` builder.
+This implements the [announced December 14 CLOB query rule](https://docs.polymarket.com/changelog/predictions),
+not a claim of live exchange acceptance or a new pagination/retry policy.
+
 Native maintenance also incorporates the terminal integration's bounded shared HTTPS runtime, request deadlines, non-replayed signed writes, prepared orders, bounded geographic reads and completed WS shutdown/credential clearing. `PM_OPENSSL_ROOT` explicitly selects an existing static OpenSSL 3.5+ SDK; default builds still build the pinned source.
 
 `net::WsClient` also supports an optional typed failure policy and incoming-message limit for authenticated PolyBolt integrations. The policy receives only the observed WS close code, handshake HTTP status, bounded `Retry-After` header and oversized-message/TLS-protocol flags. It can retire a rejected client or choose the protocol's reconnect delay; existing clients retain their original default policy. Observed close codes survive a peer's missing TLS `close_notify`. Handshake responses and priority authentication/subscription frames remain scoped to the connection generation, and callbacks retire before another read is scheduled. Raw peer close reasons and error bodies are not exposed by this policy.

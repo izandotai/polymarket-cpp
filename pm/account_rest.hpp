@@ -28,6 +28,8 @@ struct AccountRestConfig {
 
 struct AccountOpenOrderParams {
     std::string market;
+    // /data/orders requires an explicit market when filtering by asset.
+    // Missing market throws before authentication or a network request.
     std::string asset_id;
     std::string id;
 };

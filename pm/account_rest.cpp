@@ -90,6 +90,9 @@ namespace {
 
     void validate_open_order_params(const AccountOpenOrderParams& params)
     {
+        if (!params.asset_id.empty() && params.market.empty())
+            throw std::invalid_argument(
+                "pm: open-orders asset_id requires market");
         if ((!params.market.empty() && !hex_value(params.market, 64)
                 && !hex_value(params.market, 62))
             || (!params.asset_id.empty() && !decimal(params.asset_id))
